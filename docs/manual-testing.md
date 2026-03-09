@@ -60,6 +60,16 @@ PLAYWRIGHT_BASE_URL=https://clawhub.ai bun run test:pw
 This smoke gate should fail on visible error UI, page errors, and browser
 console errors.
 
+Recommended workflow coverage in Playwright:
+
+- home/install-switcher + browse CTA
+- `/search` redirect into skills browse
+- skills browse -> detail -> owner profile
+- souls browse -> detail -> owner profile
+- upload signed-out gate
+- import signed-out gate
+- authenticated upload/import canaries when storage state is configured
+
 Authenticated prod canary:
 
 ```
