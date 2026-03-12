@@ -319,6 +319,15 @@ const SORT_INDEXES = {
   installs: 'by_active_stats_installs_all_time',
 } as const
 
+const NONSUSPICIOUS_SORT_INDEXES = {
+  newest: 'by_nonsuspicious_created',
+  updated: 'by_nonsuspicious_updated',
+  name: 'by_nonsuspicious_name',
+  downloads: 'by_nonsuspicious_downloads',
+  stars: 'by_nonsuspicious_stars',
+  installs: 'by_nonsuspicious_installs',
+} as const
+
 function isSkillVersionId(
   value: Id<'skillVersions'> | null | undefined,
 ): value is Id<'skillVersions'> {
@@ -2334,10 +2343,17 @@ export const listPublicPageV2 = query({
       args.paginationOpts,
     )
 
+    const useNonsuspiciousIndex = Boolean(args.nonSuspiciousOnly)
+    const indexMap = useNonsuspiciousIndex ? NONSUSPICIOUS_SORT_INDEXES : SORT_INDEXES
+
     const runPaginate = (cursor: string | null) => {
       return ctx.db
         .query('skillSearchDigest')
-        .withIndex(SORT_INDEXES[sort], (q) => q.eq('softDeletedAt', undefined))
+        .withIndex(indexMap[sort], (q) =>
+          useNonsuspiciousIndex
+            ? q.eq('softDeletedAt', undefined).eq('isSuspicious', false)
+            : q.eq('softDeletedAt', undefined),
+        )
         .order(dir)
         .paginate({ cursor, numItems })
     }
@@ -2348,6 +2364,7 @@ export const listPublicPageV2 = query({
       runPaginate,
       initialCursor,
     )
+    // highlightedOnly is still filtered in JS (rare enough that empty pages are unlikely)
     const filteredPage = filterPublicSkillPage(
       result.page.map(digestToHydratableSkill),
       args,

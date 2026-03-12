@@ -93,7 +93,7 @@ describe('skills.listPublicPageV2', () => {
     expect(result.page[0]?.skill.slug).toBe('hl-clean')
     expect(result.continueCursor).toBe('next-cursor')
     expect(result.isDone).toBe(false)
-    expect(withIndexMock).toHaveBeenCalledWith('by_active_stats_downloads', expect.any(Function))
+    expect(withIndexMock).toHaveBeenCalledWith('by_nonsuspicious_downloads', expect.any(Function))
     expect(orderMock).toHaveBeenCalledWith('desc')
     expect(paginateMock).toHaveBeenCalledWith({ cursor: null, numItems: 25 })
   })
@@ -211,7 +211,7 @@ describe('skills.listPublicPageV2', () => {
     expect(result.continueCursor).toBe('after-clean')
     expect(result.isDone).toBe(false)
     expect(withIndexMock).toHaveBeenCalledTimes(1)
-    expect(withIndexMock).toHaveBeenCalledWith('by_active_stats_downloads', expect.any(Function))
+    expect(withIndexMock).toHaveBeenCalledWith('by_nonsuspicious_downloads', expect.any(Function))
     expect(paginateMock).toHaveBeenCalledTimes(1)
   })
 
