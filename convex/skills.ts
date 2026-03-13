@@ -1157,7 +1157,7 @@ export const getBySlug = query({
     const latestVersion = skill.latestVersionId
       ? await ctx.db.get(skill.latestVersionId)
       : null
-    const owner = await ctx.db.get(skill.ownerUserId)
+    const owner = toPublicUser(await ctx.db.get(skill.ownerUserId))
     const badges = await getSkillBadgeMap(ctx, skill._id)
 
     const forkOfSkill = skill.forkOf?.skillId
