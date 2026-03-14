@@ -8,6 +8,7 @@ import {
   ApiV1SkillListResponseSchema,
   ApiV1SkillResolveResponseSchema,
   ApiV1SkillResponseSchema,
+  ApiV1SkillVersionResponseSchema,
 } from '../../schema/index.js'
 import {
   extractZipToDir,
@@ -84,8 +85,6 @@ export async function cmdInstall(
   if (!force) {
     const exists = await fileExists(target)
     if (exists) fail(`Already installed: ${target} (use --force)`)
-  } else {
-    await rm(target, { recursive: true, force: true })
   }
 
   const spinner = createSpinner(`Resolving ${trimmed}`)
@@ -121,6 +120,24 @@ export async function cmdInstall(
 
     const resolvedVersion = versionFlag ?? skillMeta.latestVersion?.version ?? null
     if (!resolvedVersion) fail('Could not resolve latest version')
+
+    if (versionFlag) {
+      await apiRequest(
+        registry,
+        {
+          method: 'GET',
+          path: `${ApiRoutes.skills}/${encodeURIComponent(trimmed)}/versions/${encodeURIComponent(
+            resolvedVersion,
+          )}`,
+          token,
+        },
+        ApiV1SkillVersionResponseSchema,
+      )
+    }
+
+    if (force) {
+      await rm(target, { recursive: true, force: true })
+    }
 
     spinner.text = `Downloading ${trimmed}@${resolvedVersion}`
     const zip = await downloadZip(registry, { slug: trimmed, version: resolvedVersion, token })
