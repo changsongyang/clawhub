@@ -374,6 +374,30 @@ describe("packages public queries", () => {
     expect(paginate).toHaveBeenCalledTimes(3);
   });
 
+  it("returns the buffered final-page tail even when the stored cursor is done", async () => {
+    const { ctx } = makeDigestCtx({
+      pages: [
+        {
+          page: Array.from({ length: 26 }, (_, index) => makeDigest(`pkg-${index + 1}`)),
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    const first = await listPublicPageHandler(ctx, {
+      paginationOpts: { cursor: null, numItems: 25 },
+    });
+    const second = await listPublicPageHandler(ctx, {
+      paginationOpts: { cursor: first.continueCursor, numItems: 25 },
+    });
+
+    expect(first.page).toHaveLength(25);
+    expect(second.page.map((entry) => entry.name)).toEqual(["pkg-26"]);
+    expect(second.isDone).toBe(true);
+    expect(second.continueCursor).toBe("");
+  });
+
   it("keeps package page cursors compact even with large summaries", async () => {
     const { ctx } = makeDigestCtx({
       pages: [
@@ -914,6 +938,44 @@ describe("packages public queries", () => {
     expect(ctx.patch).toHaveBeenCalledWith("packageReleases:old", {
       distTags: ["stable"],
     });
+  });
+
+  it("adds a latest tag when an untagged promoted release becomes the package latest", async () => {
+    const ctx = makeInsertReleaseCtx(
+      makePackageDoc({
+        latestReleaseId: undefined,
+        latestVersionSummary: undefined,
+        tags: {},
+        stats: { downloads: 0, installs: 0, stars: 0, versions: 0 },
+      }),
+    );
+
+    await insertReleaseInternalHandler(ctx, {
+      userId: "users:owner",
+      name: "demo-plugin",
+      displayName: "Demo Plugin",
+      family: "code-plugin",
+      version: "1.0.0",
+      changelog: "beta",
+      tags: ["beta"],
+      summary: "demo",
+      files: [],
+      integritySha256: "abc123",
+    });
+
+    expect(ctx.insert).toHaveBeenCalledWith(
+      "packageReleases",
+      expect.objectContaining({
+        distTags: ["beta", "latest"],
+      }),
+    );
+    expect(ctx.patch).toHaveBeenCalledWith(
+      "packages:demo",
+      expect.objectContaining({
+        latestReleaseId: "packageReleases:new",
+        tags: { beta: "packageReleases:new", latest: "packageReleases:new" },
+      }),
+    );
   });
 
   it("validates package publish payloads inside the action path", async () => {

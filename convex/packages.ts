@@ -380,7 +380,7 @@ export const listPublicPage = query({
     const isOfficial = args.isOfficial;
 
     while (
-      !done &&
+      (offset > 0 || !done) &&
       collected.length < targetCount &&
       loops < MAX_PUBLIC_LIST_SCAN_PAGES &&
       remainingScanBudget > 0
@@ -780,12 +780,17 @@ export const insertReleaseInternal = internalMutation({
           .collect()
       : [];
 
+    const shouldPromoteLatest = args.tags.includes("latest") || !existing?.latestReleaseId;
+    const effectiveTags = shouldPromoteLatest
+      ? Array.from(new Set([...args.tags, "latest"]))
+      : args.tags;
+
     const releaseId = await ctx.db.insert("packageReleases", {
       packageId: pkgId,
       version: args.version,
       changelog: args.changelog,
       summary: args.summary,
-      distTags: args.tags,
+      distTags: effectiveTags,
       files: args.files,
       integritySha256: args.integritySha256,
       extractedPackageJson: args.extractedPackageJson,
@@ -803,10 +808,9 @@ export const insertReleaseInternal = internalMutation({
     if (!pkg) throw new ConvexError("Package insert failed");
 
     const nextTags = { ...pkg.tags };
-    for (const tag of args.tags) nextTags[tag] = releaseId;
-    const shouldPromoteLatest = args.tags.includes("latest") || !pkg.latestReleaseId;
+    for (const tag of effectiveTags) nextTags[tag] = releaseId;
     for (const priorRelease of priorReleases) {
-      const nextDistTags = (priorRelease.distTags ?? []).filter((tag) => !args.tags.includes(tag));
+      const nextDistTags = (priorRelease.distTags ?? []).filter((tag) => !effectiveTags.includes(tag));
       if (nextDistTags.length === (priorRelease.distTags ?? []).length) continue;
       await ctx.db.patch(priorRelease._id, { distTags: nextDistTags });
     }
