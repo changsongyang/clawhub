@@ -256,6 +256,115 @@ Notes:
 - Defaults to latest version.
 - File size limit: 200KB.
 
+### `GET /api/v1/packages`
+
+Unified catalog endpoint for:
+
+- skills
+- code plugins
+- bundle plugins
+
+Query params:
+
+- `limit` (optional): integer (1–100)
+- `cursor` (optional): pagination cursor
+- `family` (optional): `skill`, `code-plugin`, or `bundle-plugin`
+- `channel` (optional): `official`, `community`, or `private`
+- `isOfficial` (optional): `true` or `false`
+- `executesCode` (optional): `true` or `false`
+- `capabilityTag` (optional): capability filter for plugin packages
+
+Notes:
+
+- `GET /api/v1/code-plugins` and `GET /api/v1/bundle-plugins` remain fixed-family aliases.
+- Skill entries stay backed by the skill registry and can still be published only through `POST /api/v1/skills`.
+- `POST /api/v1/packages` is still only for code-plugin and bundle-plugin releases.
+- Anonymous callers only see public package channels.
+- Authenticated callers can see their own private packages in list/search results.
+- `channel=private` only returns packages owned by the authenticated caller.
+
+### `GET /api/v1/packages/search`
+
+Unified catalog search across skills + plugin packages.
+
+Query params:
+
+- `q` (required): query string
+- `limit` (optional): integer (1–100)
+- `family` (optional): `skill`, `code-plugin`, or `bundle-plugin`
+- `channel` (optional): `official`, `community`, or `private`
+- `isOfficial` (optional): `true` or `false`
+- `executesCode` (optional): `true` or `false`
+- `capabilityTag` (optional): capability filter for plugin packages
+
+Notes:
+
+- Anonymous callers only see public package channels.
+- Authenticated callers can search their own private packages.
+- `channel=private` only returns packages owned by the authenticated caller.
+
+### `GET /api/v1/packages/{name}`
+
+Returns package detail metadata.
+
+Notes:
+
+- Skills can also resolve through this route in the unified catalog.
+- Private packages return `404` unless the caller is the owner.
+
+### `GET /api/v1/packages/{name}/versions`
+
+Returns version history.
+
+Query params:
+
+- `limit` (optional): integer (1–100)
+- `cursor` (optional): pagination cursor
+
+Notes:
+
+- Private packages return `404` unless the caller is the owner.
+
+### `GET /api/v1/packages/{name}/versions/{version}`
+
+Returns one package version, including file metadata, compatibility, capabilities, and verification.
+
+Notes:
+
+- Private packages return `404` unless the caller is the owner.
+
+### `GET /api/v1/packages/{name}/file`
+
+Returns raw text content for a package file.
+
+Query params:
+
+- `path` (required)
+- `version` (optional)
+- `tag` (optional)
+
+Notes:
+
+- Defaults to the latest release.
+- Binary files return `415`.
+- File size limit: 200KB.
+- Private packages return `404` unless the caller is the owner.
+
+### `GET /api/v1/packages/{name}/download`
+
+Downloads a deterministic zip for a package release.
+
+Query params:
+
+- `version` (optional)
+- `tag` (optional)
+
+Notes:
+
+- Defaults to the latest release.
+- Skills redirect to `GET /api/v1/download`.
+- Private packages return `404` unless the caller is the owner.
+
 ### `GET /api/v1/resolve`
 
 Used by the CLI to map a local fingerprint to a known version.
@@ -305,6 +414,21 @@ Publishes a new version.
 
 - Preferred: `multipart/form-data` with `payload` JSON + `files[]` blobs.
 - JSON body with `files` (storageId-based) is also accepted.
+
+### `POST /api/v1/packages`
+
+Publishes a code-plugin or bundle-plugin release.
+
+- Requires Bearer token auth.
+- Preferred: `multipart/form-data` with `payload` JSON + `files[]` blobs.
+- JSON body with `files` (storageId-based) is also accepted.
+
+Validation highlights:
+
+- `family` must be `code-plugin` or `bundle-plugin`.
+- Code plugins require `package.json`, `openclaw.plugin.json`, source repo metadata, source commit metadata, and config schema metadata.
+- Bundle plugins require at least one host target.
+- Only trusted publishers may publish to the `official` channel.
 
 ### `DELETE /api/v1/skills/{slug}` / `POST /api/v1/skills/{slug}/undelete`
 

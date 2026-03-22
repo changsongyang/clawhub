@@ -93,6 +93,7 @@ export default function Header() {
               Skills
             </Link>
           )}
+          {isSoulMode ? null : <Link to="/packages">Packages</Link>}
           <Link to="/upload" search={{ updateSlug: undefined }}>
             Upload
           </Link>
@@ -173,6 +174,11 @@ export default function Header() {
                     </Link>
                   )}
                 </DropdownMenuItem>
+                {isSoulMode ? null : (
+                  <DropdownMenuItem asChild>
+                    <Link to="/packages">Packages</Link>
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem asChild>
                   <Link to="/upload" search={{ updateSlug: undefined }}>
                     Upload

@@ -82,6 +82,10 @@ const MAX_LIST_LIMIT = 50;
 const MAX_PUBLIC_LIST_LIMIT = 200;
 const MAX_LIST_BULK_LIMIT = 200;
 const MAX_LIST_TAKE = 1000;
+const MAX_SKILL_CATALOG_SCAN_DOCUMENTS = 30_000;
+const MAX_SKILL_CATALOG_SCAN_PAGES = 200;
+const MAX_SKILL_CATALOG_SEARCH_PAGE_SIZE = 200;
+const MAX_SKILL_CATALOG_SEARCH_SCAN_PAGES = 200;
 const HARD_DELETE_BATCH_SIZE = 100;
 const HARD_DELETE_VERSION_BATCH_SIZE = 10;
 const HARD_DELETE_LEADERBOARD_BATCH_SIZE = 25;
@@ -96,6 +100,7 @@ const MAX_MANUAL_OVERRIDE_NOTE_LENGTH = 1200;
 const DEFAULT_STAFF_AUDIT_LOG_LIMIT = 10;
 const MAX_STAFF_AUDIT_LOG_LIMIT = 50;
 const USER_MODERATION_REASON = "user.moderation";
+const SKILL_CATALOG_CURSOR_PREFIX = "skillcat:";
 
 function buildStructuredModerationPatch(params: {
   staticScan?: Doc<"skillVersions">["staticScan"];
@@ -2587,6 +2592,269 @@ export const listPublicPageV4 = query({
     }
 
     return { page: items, hasMore: result.hasMore, nextCursor };
+  },
+});
+
+type PublicSkillCatalogItem = {
+  name: string;
+  displayName: string;
+  family: "skill";
+  runtimeId: null;
+  channel: "official" | "community";
+  isOfficial: boolean;
+  summary: string | null;
+  ownerHandle: string | null;
+  createdAt: number;
+  updatedAt: number;
+  latestVersion: string | null;
+  capabilityTags: string[];
+  executesCode: false;
+  verificationTier: null;
+};
+
+type SkillCatalogCursorState = {
+  cursor: string | null;
+  offset: number;
+  pageSize: number | null;
+  done: boolean;
+};
+
+function encodeSkillCatalogCursor(state: SkillCatalogCursorState) {
+  if (state.done && state.offset === 0) return "";
+  return `${SKILL_CATALOG_CURSOR_PREFIX}${JSON.stringify(state)}`;
+}
+
+function decodeSkillCatalogCursor(raw: string | null | undefined): SkillCatalogCursorState {
+  if (!raw) return { cursor: null, offset: 0, pageSize: null, done: false };
+  if (!raw.startsWith(SKILL_CATALOG_CURSOR_PREFIX)) {
+    return { cursor: raw, offset: 0, pageSize: null, done: false };
+  }
+  try {
+    const parsed = JSON.parse(raw.slice(SKILL_CATALOG_CURSOR_PREFIX.length)) as Partial<SkillCatalogCursorState>;
+    return {
+      cursor: typeof parsed.cursor === "string" ? parsed.cursor : null,
+      offset: typeof parsed.offset === "number" && parsed.offset > 0 ? parsed.offset : 0,
+      pageSize:
+        typeof parsed.pageSize === "number" && parsed.pageSize > 0 ? parsed.pageSize : null,
+      done: parsed.done === true,
+    };
+  } catch {
+    return { cursor: null, offset: 0, pageSize: null, done: false };
+  }
+}
+
+function isSkillCatalogOfficial(digest: Doc<"skillSearchDigest">) {
+  return Boolean(digest.badges?.official);
+}
+
+function getSkillCatalogChannel(digest: Doc<"skillSearchDigest">): "official" | "community" {
+  return isSkillCatalogOfficial(digest) ? "official" : "community";
+}
+
+function isVisibleSkillCatalogDigest(digest: Doc<"skillSearchDigest">) {
+  const publicSkill = toPublicSkill(digestToHydratableSkill(digest));
+  if (!publicSkill) return false;
+  const ownerInfo = digestToOwnerInfo(digest);
+  return Boolean(ownerInfo?.owner);
+}
+
+function skillCatalogMatchesFilters(
+  digest: Doc<"skillSearchDigest">,
+  args: {
+    channel?: "official" | "community" | "private";
+    isOfficial?: boolean;
+    executesCode?: boolean;
+    capabilityTag?: string;
+  },
+) {
+  if (!isVisibleSkillCatalogDigest(digest)) return false;
+  if (args.channel === "private") return false;
+  if (args.capabilityTag) return false;
+  if (args.executesCode === true) return false;
+  const isOfficial = isSkillCatalogOfficial(digest);
+  const channel = getSkillCatalogChannel(digest);
+  if (typeof args.isOfficial === "boolean" && isOfficial !== args.isOfficial) return false;
+  if (args.channel && channel !== args.channel) return false;
+  return true;
+}
+
+function toPublicSkillCatalogItem(digest: Doc<"skillSearchDigest">): PublicSkillCatalogItem {
+  const ownerInfo = digestToOwnerInfo(digest);
+  return {
+    name: digest.slug,
+    displayName: digest.displayName,
+    family: "skill",
+    runtimeId: null,
+    channel: getSkillCatalogChannel(digest),
+    isOfficial: isSkillCatalogOfficial(digest),
+    summary: digest.summary ?? null,
+    ownerHandle: ownerInfo?.ownerHandle ?? null,
+    createdAt: digest.createdAt,
+    updatedAt: digest.updatedAt,
+    latestVersion: digest.latestVersionSummary?.version ?? null,
+    capabilityTags: [],
+    executesCode: false,
+    verificationTier: null,
+  };
+}
+
+function scoreSkillCatalogResult(digest: Doc<"skillSearchDigest">, queryText: string) {
+  const needle = queryText.toLowerCase();
+  const slug = digest.slug.toLowerCase();
+  const display = digest.displayName.toLowerCase();
+  const summary = (digest.summary ?? "").toLowerCase();
+  let score = 0;
+  if (slug === needle) score += 200;
+  else if (slug.startsWith(needle)) score += 120;
+  else if (slug.includes(needle)) score += 80;
+
+  if (display === needle) score += 150;
+  else if (display.startsWith(needle)) score += 70;
+  else if (display.includes(needle)) score += 40;
+
+  if (summary.includes(needle)) score += 20;
+  if (isSkillCatalogOfficial(digest)) score += 5;
+  return score;
+}
+
+export const listPackageCatalogPage = query({
+  args: {
+    channel: v.optional(v.union(v.literal("official"), v.literal("community"), v.literal("private"))),
+    isOfficial: v.optional(v.boolean()),
+    executesCode: v.optional(v.boolean()),
+    capabilityTag: v.optional(v.string()),
+    paginationOpts: paginationOptsValidator,
+  },
+  handler: async (ctx, args) => {
+    if (args.channel === "private" || args.executesCode === true || args.capabilityTag) {
+      return { page: [], isDone: true, continueCursor: "" };
+    }
+
+    const targetCount = args.paginationOpts.numItems;
+    const collected: PublicSkillCatalogItem[] = [];
+    const decodedCursor = decodeSkillCatalogCursor(args.paginationOpts.cursor);
+    let cursor = decodedCursor.cursor;
+    let offset = decodedCursor.offset;
+    let pageSize = decodedCursor.pageSize;
+    let done = decodedCursor.done;
+    let loops = 0;
+    let remainingScanBudget = MAX_SKILL_CATALOG_SCAN_DOCUMENTS;
+
+    while (
+      (offset > 0 || !done) &&
+      collected.length < targetCount &&
+      loops < MAX_SKILL_CATALOG_SCAN_PAGES &&
+      remainingScanBudget > 0
+    ) {
+      loops += 1;
+      const effectivePageSize = Math.min(
+        remainingScanBudget,
+        offset > 0 && pageSize ? Math.max(pageSize, offset + 1) : Math.max(targetCount * 3, targetCount),
+      );
+      if (effectivePageSize <= 0) break;
+      remainingScanBudget -= effectivePageSize;
+      const pageCursor = cursor;
+      const page = await ctx.db
+        .query("skillSearchDigest")
+        .withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined))
+        .order("desc")
+        .paginate({ cursor: pageCursor, numItems: effectivePageSize });
+
+      for (let index = offset; index < page.page.length; index += 1) {
+        const digest = page.page[index];
+        if (!skillCatalogMatchesFilters(digest, args)) continue;
+        collected.push(toPublicSkillCatalogItem(digest));
+        if (collected.length >= targetCount) {
+          const nextOffset = index + 1;
+          if (nextOffset < page.page.length) {
+            cursor = pageCursor;
+            offset = nextOffset;
+            pageSize = effectivePageSize;
+            done = page.isDone;
+          } else {
+            cursor = page.continueCursor;
+            offset = 0;
+            pageSize = effectivePageSize;
+            done = page.isDone;
+          }
+          return {
+            page: collected,
+            isDone: done && offset === 0,
+            continueCursor: encodeSkillCatalogCursor({ cursor, offset, pageSize, done }),
+          };
+        }
+      }
+
+      done = page.isDone;
+      cursor = page.continueCursor;
+      offset = 0;
+      pageSize = effectivePageSize;
+    }
+
+    return {
+      page: collected,
+      isDone: done,
+      continueCursor: encodeSkillCatalogCursor({ cursor, offset, pageSize, done }),
+    };
+  },
+});
+
+export const searchPackageCatalogPublic = query({
+  args: {
+    query: v.string(),
+    limit: v.optional(v.number()),
+    channel: v.optional(v.union(v.literal("official"), v.literal("community"), v.literal("private"))),
+    isOfficial: v.optional(v.boolean()),
+    executesCode: v.optional(v.boolean()),
+    capabilityTag: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const queryText = args.query.trim().toLowerCase();
+    if (!queryText) return [];
+    if (args.channel === "private" || args.executesCode === true || args.capabilityTag) return [];
+
+    const targetCount = Math.max(1, Math.min(args.limit ?? 20, 100));
+    const matches: Array<{ score: number; package: PublicSkillCatalogItem }> = [];
+    const seen = new Set<string>();
+    const pageSize = Math.min(MAX_SKILL_CATALOG_SEARCH_PAGE_SIZE, Math.max(targetCount * 5, 50));
+    let cursor: string | null = null;
+    let done = false;
+    let loops = 0;
+    let remainingScanBudget = MAX_SKILL_CATALOG_SCAN_DOCUMENTS;
+
+    while (!done && loops < MAX_SKILL_CATALOG_SEARCH_SCAN_PAGES && remainingScanBudget > 0) {
+      loops += 1;
+      const effectivePageSize = Math.min(pageSize, remainingScanBudget);
+      if (effectivePageSize <= 0) break;
+      remainingScanBudget -= effectivePageSize;
+      const page = await ctx.db
+        .query("skillSearchDigest")
+        .withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined))
+        .order("desc")
+        .paginate({ cursor, numItems: effectivePageSize });
+
+      for (const digest of page.page) {
+        if (!skillCatalogMatchesFilters(digest, args)) continue;
+        const score = scoreSkillCatalogResult(digest, queryText);
+        if (score <= 0 || seen.has(digest.skillId)) continue;
+        seen.add(digest.skillId);
+        matches.push({
+          score,
+          package: toPublicSkillCatalogItem(digest),
+        });
+      }
+      done = page.isDone;
+      cursor = page.continueCursor;
+    }
+
+    return matches
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          Number(b.package.isOfficial) - Number(a.package.isOfficial) ||
+          b.package.updatedAt - a.package.updatedAt,
+      )
+      .slice(0, targetCount);
   },
 });
 

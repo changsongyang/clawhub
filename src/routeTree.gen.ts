@@ -20,8 +20,11 @@ import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SoulsIndexRouteImport } from './routes/souls/index'
 import { Route as SkillsIndexRouteImport } from './routes/skills/index'
+import { Route as PackagesIndexRouteImport } from './routes/packages/index'
 import { Route as UHandleRouteImport } from './routes/u/$handle'
 import { Route as SoulsSlugRouteImport } from './routes/souls/$slug'
+import { Route as PackagesNewRouteImport } from './routes/packages/new'
+import { Route as PackagesNameRouteImport } from './routes/packages/$name'
 import { Route as CliAuthRouteImport } from './routes/cli/auth'
 import { Route as OwnerSlugRouteImport } from './routes/$owner/$slug'
 
@@ -80,6 +83,11 @@ const SkillsIndexRoute = SkillsIndexRouteImport.update({
   path: '/skills/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PackagesIndexRoute = PackagesIndexRouteImport.update({
+  id: '/packages/',
+  path: '/packages/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const UHandleRoute = UHandleRouteImport.update({
   id: '/u/$handle',
   path: '/u/$handle',
@@ -88,6 +96,16 @@ const UHandleRoute = UHandleRouteImport.update({
 const SoulsSlugRoute = SoulsSlugRouteImport.update({
   id: '/souls/$slug',
   path: '/souls/$slug',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PackagesNewRoute = PackagesNewRouteImport.update({
+  id: '/packages/new',
+  path: '/packages/new',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PackagesNameRoute = PackagesNameRouteImport.update({
+  id: '/packages/$name',
+  path: '/packages/$name',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CliAuthRoute = CliAuthRouteImport.update({
@@ -113,8 +131,11 @@ export interface FileRoutesByFullPath {
   '/upload': typeof UploadRoute
   '/$owner/$slug': typeof OwnerSlugRoute
   '/cli/auth': typeof CliAuthRoute
+  '/packages/$name': typeof PackagesNameRoute
+  '/packages/new': typeof PackagesNewRoute
   '/souls/$slug': typeof SoulsSlugRoute
   '/u/$handle': typeof UHandleRoute
+  '/packages/': typeof PackagesIndexRoute
   '/skills/': typeof SkillsIndexRoute
   '/souls/': typeof SoulsIndexRoute
 }
@@ -130,8 +151,11 @@ export interface FileRoutesByTo {
   '/upload': typeof UploadRoute
   '/$owner/$slug': typeof OwnerSlugRoute
   '/cli/auth': typeof CliAuthRoute
+  '/packages/$name': typeof PackagesNameRoute
+  '/packages/new': typeof PackagesNewRoute
   '/souls/$slug': typeof SoulsSlugRoute
   '/u/$handle': typeof UHandleRoute
+  '/packages': typeof PackagesIndexRoute
   '/skills': typeof SkillsIndexRoute
   '/souls': typeof SoulsIndexRoute
 }
@@ -148,8 +172,11 @@ export interface FileRoutesById {
   '/upload': typeof UploadRoute
   '/$owner/$slug': typeof OwnerSlugRoute
   '/cli/auth': typeof CliAuthRoute
+  '/packages/$name': typeof PackagesNameRoute
+  '/packages/new': typeof PackagesNewRoute
   '/souls/$slug': typeof SoulsSlugRoute
   '/u/$handle': typeof UHandleRoute
+  '/packages/': typeof PackagesIndexRoute
   '/skills/': typeof SkillsIndexRoute
   '/souls/': typeof SoulsIndexRoute
 }
@@ -167,8 +194,11 @@ export interface FileRouteTypes {
     | '/upload'
     | '/$owner/$slug'
     | '/cli/auth'
+    | '/packages/$name'
+    | '/packages/new'
     | '/souls/$slug'
     | '/u/$handle'
+    | '/packages/'
     | '/skills/'
     | '/souls/'
   fileRoutesByTo: FileRoutesByTo
@@ -184,8 +214,11 @@ export interface FileRouteTypes {
     | '/upload'
     | '/$owner/$slug'
     | '/cli/auth'
+    | '/packages/$name'
+    | '/packages/new'
     | '/souls/$slug'
     | '/u/$handle'
+    | '/packages'
     | '/skills'
     | '/souls'
   id:
@@ -201,8 +234,11 @@ export interface FileRouteTypes {
     | '/upload'
     | '/$owner/$slug'
     | '/cli/auth'
+    | '/packages/$name'
+    | '/packages/new'
     | '/souls/$slug'
     | '/u/$handle'
+    | '/packages/'
     | '/skills/'
     | '/souls/'
   fileRoutesById: FileRoutesById
@@ -219,8 +255,11 @@ export interface RootRouteChildren {
   UploadRoute: typeof UploadRoute
   OwnerSlugRoute: typeof OwnerSlugRoute
   CliAuthRoute: typeof CliAuthRoute
+  PackagesNameRoute: typeof PackagesNameRoute
+  PackagesNewRoute: typeof PackagesNewRoute
   SoulsSlugRoute: typeof SoulsSlugRoute
   UHandleRoute: typeof UHandleRoute
+  PackagesIndexRoute: typeof PackagesIndexRoute
   SkillsIndexRoute: typeof SkillsIndexRoute
   SoulsIndexRoute: typeof SoulsIndexRoute
 }
@@ -304,6 +343,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SkillsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/packages/': {
+      id: '/packages/'
+      path: '/packages'
+      fullPath: '/packages/'
+      preLoaderRoute: typeof PackagesIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/u/$handle': {
       id: '/u/$handle'
       path: '/u/$handle'
@@ -316,6 +362,20 @@ declare module '@tanstack/react-router' {
       path: '/souls/$slug'
       fullPath: '/souls/$slug'
       preLoaderRoute: typeof SoulsSlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/packages/new': {
+      id: '/packages/new'
+      path: '/packages/new'
+      fullPath: '/packages/new'
+      preLoaderRoute: typeof PackagesNewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/packages/$name': {
+      id: '/packages/$name'
+      path: '/packages/$name'
+      fullPath: '/packages/$name'
+      preLoaderRoute: typeof PackagesNameRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/cli/auth': {
@@ -347,8 +407,11 @@ const rootRouteChildren: RootRouteChildren = {
   UploadRoute: UploadRoute,
   OwnerSlugRoute: OwnerSlugRoute,
   CliAuthRoute: CliAuthRoute,
+  PackagesNameRoute: PackagesNameRoute,
+  PackagesNewRoute: PackagesNewRoute,
   SoulsSlugRoute: SoulsSlugRoute,
   UHandleRoute: UHandleRoute,
+  PackagesIndexRoute: PackagesIndexRoute,
   SkillsIndexRoute: SkillsIndexRoute,
   SoulsIndexRoute: SoulsIndexRoute,
 }

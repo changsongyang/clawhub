@@ -1,6 +1,11 @@
 /* @vitest-environment node */
+import { unzipSync } from "fflate";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
+
+vi.mock("@convex-dev/auth/server", () => ({
+  getAuthUserId: vi.fn(),
+}));
 
 vi.mock("./lib/apiTokenAuth", () => ({
   requireApiTokenUser: vi.fn(),
@@ -11,6 +16,7 @@ vi.mock("./skills", () => ({
   publishVersionForUser: vi.fn(),
 }));
 
+const { getAuthUserId } = await import("@convex-dev/auth/server");
 const { getOptionalApiTokenUserId, requireApiTokenUser } = await import("./lib/apiTokenAuth");
 const { publishVersionForUser } = await import("./skills");
 const { __handlers } = await import("./httpApiV1");
@@ -67,6 +73,8 @@ const blockedRate = () => ({
 });
 
 beforeEach(() => {
+  vi.mocked(getAuthUserId).mockReset();
+  vi.mocked(getAuthUserId).mockResolvedValue(null);
   vi.mocked(getOptionalApiTokenUserId).mockReset();
   vi.mocked(getOptionalApiTokenUserId).mockResolvedValue(null);
   vi.mocked(requireApiTokenUser).mockReset();
@@ -2228,6 +2236,699 @@ describe("httpApiV1 handlers", () => {
     const json = await response.json();
     expect(json.ok).toBe(true);
     expect(json.unstarred).toBe(true);
+  });
+
+  it("packages search forwards executesCode and capabilityTag", async () => {
+    const runQuery = vi.fn().mockResolvedValue([]);
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request(
+        "https://example.com/api/v1/packages/search?q=test&executesCode=true&capabilityTag=tools&limit=5",
+      ),
+    );
+    if (response.status !== 200) throw new Error(await response.text());
+    expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        query: "test",
+        limit: 5,
+        executesCode: true,
+        capabilityTag: "tools",
+      }),
+    );
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        key: expect.stringMatching(/^ip:/),
+        limit: 120,
+      }),
+    );
+    expect(response.headers.get("RateLimit-Limit")).toBeTruthy();
+  });
+
+  it("packages list supports family=skill on the generic route", async () => {
+    const runQuery = vi.fn().mockResolvedValue({ page: [], isDone: true, continueCursor: "" });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.listPackagesV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages?family=skill&limit=7"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        paginationOpts: { cursor: null, numItems: 7 },
+      }),
+    );
+  });
+
+  it("packages search supports family=skill on the generic route", async () => {
+    const runQuery = vi.fn().mockResolvedValue([]);
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/search?q=demo&family=skill"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        query: "demo",
+      }),
+    );
+  });
+
+  it("packages list forwards viewerUserId for authenticated private package browsing", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users:owner" as never);
+    const runQuery = vi.fn().mockResolvedValue({ page: [], isDone: true, continueCursor: "" });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.listPackagesV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages?channel=private&limit=7"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        channel: "private",
+        viewerUserId: "users:owner",
+        paginationOpts: { cursor: null, numItems: 7 },
+      }),
+    );
+  });
+
+  it("packages search forwards viewerUserId for authenticated private package search", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users:owner" as never);
+    const runQuery = vi.fn().mockResolvedValue([]);
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/search?q=secret&channel=private"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        query: "secret",
+        channel: "private",
+        viewerUserId: "users:owner",
+      }),
+    );
+  });
+
+  it("packages detail falls back to public skills", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args) return null;
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:demo",
+            slug: "demo",
+            displayName: "Demo Skill",
+            summary: "Skill summary",
+            latestVersionId: "skillVersions:demo-1",
+            tags: { latest: "skillVersions:demo-1" },
+            badges: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: {
+            _id: "skillVersions:demo-1",
+            skillId: "skills:demo",
+            version: "1.0.0",
+            createdAt: 3,
+            changelog: "init",
+            files: [],
+          },
+          owner: { handle: "steipete", displayName: "Peter" },
+        };
+      }
+      if ("versionIds" in args) {
+        return [{ _id: "skillVersions:demo-1", version: "1.0.0" }];
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/demo"),
+    );
+
+    if (response.status !== 200) throw new Error(await response.text());
+    await expect(response.json()).resolves.toMatchObject({
+      package: {
+        name: "demo",
+        family: "skill",
+        latestVersion: "1.0.0",
+        channel: "community",
+      },
+      owner: {
+        handle: "steipete",
+      },
+    });
+  });
+
+  it("packages file serves SKILL.md for skill README requests", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args) return null;
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:demo",
+            slug: "demo",
+            displayName: "Demo Skill",
+            summary: "Skill summary",
+            latestVersionId: "skillVersions:demo-1",
+            tags: { latest: "skillVersions:demo-1" },
+            badges: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: null,
+          owner: { handle: "steipete" },
+        };
+      }
+      if ("versionId" in args) {
+        return {
+          _id: "skillVersions:demo-1",
+          skillId: "skills:demo",
+          version: "1.0.0",
+          createdAt: 3,
+          changelog: "init",
+          files: [
+            {
+              path: "SKILL.md",
+              size: 11,
+              sha256: "abc",
+              storageId: "storage:skill",
+              contentType: "text/markdown",
+            },
+          ],
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const storage = {
+      get: vi.fn().mockResolvedValue(new Blob(["# Demo skill"])),
+    };
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage }),
+      new Request("https://example.com/api/v1/packages/demo/file?path=README.md"),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("# Demo skill");
+    expect(storage.get).toHaveBeenCalledWith("storage:skill");
+  });
+
+  it("packages download redirects skills to the skill download endpoint", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args) return null;
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:demo",
+            slug: "demo",
+            displayName: "Demo Skill",
+            summary: "Skill summary",
+            latestVersionId: "skillVersions:demo-1",
+            tags: { latest: "skillVersions:demo-1" },
+            badges: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: null,
+          owner: { handle: "steipete" },
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/demo/download?version=1.0.0"),
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("Location")).toBe(
+      "https://example.com/api/v1/download?slug=demo&version=1.0.0",
+    );
+  });
+
+  it("packages detail hides private packages from anonymous requests", async () => {
+    vi.mocked(getOptionalApiTokenUserId).mockResolvedValue(null);
+    const runQuery = vi.fn().mockResolvedValue(null);
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/private-plugin"),
+    );
+
+    expect(response.status).toBe(404);
+    expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        name: "private-plugin",
+        viewerUserId: undefined,
+      }),
+    );
+  });
+
+  it("packages detail allows private packages for browser-session owners", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users:owner" as never);
+    const runQuery = vi.fn().mockResolvedValue({
+      package: {
+        _id: "packages:private",
+        name: "private-plugin",
+        displayName: "Private Plugin",
+        family: "code-plugin",
+        tags: {},
+        latestReleaseId: "packageReleases:1",
+        channel: "private",
+        isOfficial: false,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      latestRelease: null,
+      owner: { _id: "users:owner", handle: "owner" },
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/private-plugin"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        name: "private-plugin",
+        viewerUserId: "users:owner",
+      }),
+    );
+  });
+
+  it("treats /packages/search without q as a package detail route", async () => {
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args) {
+        return {
+          package: {
+            _id: "packages:search",
+            name: "search",
+            displayName: "Search Package",
+            family: "code-plugin",
+            tags: {},
+            latestReleaseId: null,
+            channel: "community",
+            isOfficial: false,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          latestRelease: null,
+          owner: null,
+        };
+      }
+      return [];
+    });
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/search"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        name: "search",
+      }),
+    );
+    expect(runQuery).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        query: expect.any(String),
+      }),
+    );
+  });
+
+  it("package download uses download rate limiting", async () => {
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args) {
+        return {
+          package: {
+            _id: "packages:1",
+            name: "demo-plugin",
+            displayName: "Demo Plugin",
+            family: "code-plugin",
+            tags: {},
+            latestReleaseId: "packageReleases:1",
+            channel: "community",
+            isOfficial: false,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          latestRelease: null,
+          owner: null,
+        };
+      }
+      if ("releaseId" in args) {
+        return {
+          _id: "packageReleases:1",
+          version: "1.0.0",
+          createdAt: 1,
+          changelog: "init",
+          files: [
+            {
+              path: "package.json",
+              size: 2,
+              sha256: "a".repeat(64),
+              storageId: "storage:1",
+              contentType: "application/json",
+            },
+          ],
+        };
+      }
+      return null;
+    });
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({
+        runQuery,
+        runMutation,
+        storage: {
+          get: vi.fn().mockResolvedValue(new Blob(["{}"], { type: "application/json" })),
+        },
+      }),
+      new Request("https://example.com/api/v1/packages/demo-plugin/download"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("RateLimit-Limit")).toBeTruthy();
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        key: expect.stringMatching(/^ip:/),
+        limit: 20,
+      }),
+    );
+  });
+
+  it("package download metadata uses the owner user id", async () => {
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args) {
+        return {
+          package: {
+            _id: "packages:1",
+            name: "demo-plugin",
+            displayName: "Demo Plugin",
+            family: "code-plugin",
+            tags: {},
+            latestReleaseId: "packageReleases:1",
+            channel: "community",
+            isOfficial: false,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          latestRelease: null,
+          owner: { _id: "users:owner", handle: "owner" },
+        };
+      }
+      if ("releaseId" in args) {
+        return {
+          _id: "packageReleases:1",
+          version: "1.0.0",
+          createdAt: 1,
+          changelog: "init",
+          files: [
+            {
+              path: "package.json",
+              size: 2,
+              sha256: "a".repeat(64),
+              storageId: "storage:1",
+              contentType: "application/json",
+            },
+          ],
+        };
+      }
+      return null;
+    });
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({
+        runQuery,
+        runMutation,
+        storage: {
+          get: vi.fn().mockResolvedValue(new Blob(["{}"], { type: "application/json" })),
+        },
+      }),
+      new Request("https://example.com/api/v1/packages/demo-plugin/download"),
+    );
+
+    const zipEntries = unzipSync(new Uint8Array(await response.arrayBuffer()));
+    const meta = JSON.parse(new TextDecoder().decode(zipEntries["_meta.json"]));
+    expect(meta.ownerId).toBe("users:owner");
+  });
+
+  it("package download fails when any stored file is missing", async () => {
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args) {
+        return {
+          package: {
+            _id: "packages:1",
+            name: "demo-plugin",
+            displayName: "Demo Plugin",
+            family: "code-plugin",
+            tags: {},
+            latestReleaseId: "packageReleases:1",
+            channel: "community",
+            isOfficial: false,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          latestRelease: null,
+          owner: { _id: "users:owner", handle: "owner" },
+        };
+      }
+      if ("releaseId" in args) {
+        return {
+          _id: "packageReleases:1",
+          version: "1.0.0",
+          createdAt: 1,
+          changelog: "init",
+          files: [
+            {
+              path: "package.json",
+              size: 2,
+              sha256: "a".repeat(64),
+              storageId: "storage:1",
+              contentType: "application/json",
+            },
+            {
+              path: "dist/index.js",
+              size: 2,
+              sha256: "b".repeat(64),
+              storageId: "storage:missing",
+              contentType: "text/javascript",
+            },
+          ],
+        };
+      }
+      return null;
+    });
+    const storageGet = vi.fn(async (storageId: string) => {
+      if (storageId === "storage:1") return new Blob(["{}"], { type: "application/json" });
+      return null;
+    });
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({
+        runQuery,
+        runMutation,
+        storage: { get: storageGet },
+      }),
+      new Request("https://example.com/api/v1/packages/demo-plugin/download"),
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.text()).toBe("Missing stored file: dist/index.js");
+  });
+
+  it("blocks file and download access to soft-deleted package releases", async () => {
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args) {
+        return {
+          package: {
+            _id: "packages:1",
+            name: "demo-plugin",
+            displayName: "Demo Plugin",
+            family: "code-plugin",
+            tags: { latest: "packageReleases:deleted" },
+            latestReleaseId: "packageReleases:deleted",
+            channel: "community",
+            isOfficial: false,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          latestRelease: null,
+          owner: null,
+        };
+      }
+      if ("releaseId" in args || "version" in args) {
+        return {
+          _id: "packageReleases:deleted",
+          version: "1.0.0",
+          createdAt: 1,
+          changelog: "init",
+          distTags: ["latest"],
+          softDeletedAt: 10,
+          files: [
+            {
+              path: "README.md",
+              size: 2,
+              sha256: "a".repeat(64),
+              storageId: "storage:1",
+              contentType: "text/markdown",
+            },
+          ],
+        };
+      }
+      return null;
+    });
+
+    const fileResponse = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage: { get: vi.fn() } }),
+      new Request("https://example.com/api/v1/packages/demo-plugin/file?version=1.0.0&path=README.md"),
+    );
+    const downloadResponse = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage: { get: vi.fn() } }),
+      new Request("https://example.com/api/v1/packages/demo-plugin/download?tag=latest"),
+    );
+
+    expect(fileResponse.status).toBe(404);
+    expect(await fileResponse.text()).toBe("Version not found");
+    expect(downloadResponse.status).toBe(404);
+    expect(await downloadResponse.text()).toBe("Version not found");
+  });
+
+  it("package publish uses write rate limiting", async () => {
+    vi.mocked(getOptionalApiTokenUserId).mockResolvedValue("users:1" as never);
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:1",
+      user: { _id: "users:1", handle: "p" },
+    } as never);
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const runAction = vi.fn().mockResolvedValue({ ok: true, packageId: "pkg:1", releaseId: "rel:1" });
+
+    const response = await __handlers.publishPackageV1Handler(
+      makeCtx({ runAction, runMutation }),
+      new Request("https://example.com/api/v1/packages", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer clh_test",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          name: "demo-plugin",
+          family: "bundle-plugin",
+          version: "1.0.0",
+          changelog: "init",
+          bundle: { hostTargets: ["desktop"] },
+          files: [
+            {
+              path: "openclaw.bundle.json",
+              size: 2,
+              storageId: "storage:1",
+              sha256: "a".repeat(64),
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("RateLimit-Limit")).toBeTruthy();
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        key: "user:users:1",
+        limit: 120,
+      }),
+    );
+  });
+
+  it("multipart package publish ignores macOS junk files", async () => {
+    vi.mocked(getOptionalApiTokenUserId).mockResolvedValue("users:1" as never);
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:1",
+      user: { _id: "users:1", handle: "p" },
+    } as never);
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const runAction = vi.fn().mockResolvedValue({ ok: true, packageId: "pkg:1", releaseId: "rel:1" });
+    const form = new FormData();
+    form.set(
+      "payload",
+      JSON.stringify({
+        name: "demo-plugin",
+        family: "bundle-plugin",
+        version: "1.0.0",
+        changelog: "init",
+        bundle: { hostTargets: ["desktop"] },
+      }),
+    );
+    form.append("files", new File(["{}"], ".DS_Store", { type: "application/octet-stream" }));
+    form.append(
+      "files",
+      new File(["{}"], "openclaw.bundle.json", { type: "application/json" }),
+    );
+
+    const response = await __handlers.publishPackageV1Handler(
+      makeCtx({
+        runAction,
+        runMutation,
+        storage: {
+          store: vi.fn(async (entry: File) => `storage:${entry.name}`),
+        },
+      }),
+      new Request("https://example.com/api/v1/packages", {
+        method: "POST",
+        headers: { Authorization: "Bearer clh_test" },
+        body: form,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(runAction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          files: [
+            expect.objectContaining({
+              path: "openclaw.bundle.json",
+            }),
+          ],
+        }),
+      }),
+    );
   });
 
   it("delete/undelete map forbidden/not-found/unknown to 403/404/500", async () => {

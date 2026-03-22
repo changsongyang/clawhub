@@ -49,6 +49,7 @@
     "convex-helpers": "^0.1.114",
     "fflate": "^0.8.2",
     "h3": "2.0.1-rc.18",
+    "ignore": "^7.0.5",
     "lucide-react": "^0.577.0",
     "monaco-editor": "^0.55.1",
     "nitro": "3.0.260311-beta",
