@@ -1,5 +1,6 @@
 import { customCtx, customMutation } from "convex-helpers/server/customFunctions";
 import { Triggers } from "convex-helpers/server/triggers";
+import semver from "semver";
 import type { DataModel, Doc, Id } from "./_generated/dataModel";
 import {
   mutation as rawMutation,
@@ -26,6 +27,7 @@ type LatestPackageRelease = Pick<
   | "createdAt"
   | "version"
   | "changelog"
+  | "summary"
   | "compatibility"
   | "capabilities"
   | "verification"
@@ -46,30 +48,47 @@ function toPackageLatestVersionSummary(
   };
 }
 
-async function getMostRecentActivePackageRelease(
+function compareFallbackReleases(a: LatestPackageRelease, b: LatestPackageRelease) {
+  const aSemver = semver.valid(a.version);
+  const bSemver = semver.valid(b.version);
+  if (aSemver && bSemver) return semver.compare(aSemver, bSemver);
+  if (aSemver) return 1;
+  if (bSemver) return -1;
+  if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+  return a._id.localeCompare(b._id);
+}
+
+async function getPreferredFallbackPackageRelease(
   ctx: PackageDigestSyncCtx,
   packageId: Id<"packages">,
 ): Promise<LatestPackageRelease | null> {
-  const page = await ctx.db
-    .query("packageReleases")
-    .withIndex("by_package_active_created", (q) =>
-      q.eq("packageId", packageId).eq("softDeletedAt", undefined),
-    )
-    .order("desc")
-    .paginate({ cursor: null, numItems: 1 });
-  const release = page.page[0];
-  return release
-    ? {
+  let cursor: string | null = null;
+  let best: LatestPackageRelease | null = null;
+  while (true) {
+    const page = await ctx.db
+      .query("packageReleases")
+      .withIndex("by_package_active_created", (q) =>
+        q.eq("packageId", packageId).eq("softDeletedAt", undefined),
+      )
+      .order("desc")
+      .paginate({ cursor, numItems: 100 });
+    for (const release of page.page) {
+      const candidate: LatestPackageRelease = {
         _id: release._id,
         createdAt: release.createdAt,
         version: release.version,
         changelog: release.changelog,
+        summary: release.summary,
         compatibility: release.compatibility,
         capabilities: release.capabilities,
         verification: release.verification,
         distTags: release.distTags,
-      }
-    : null;
+      };
+      if (!best || compareFallbackReleases(candidate, best) > 0) best = candidate;
+    }
+    if (page.isDone) return best;
+    cursor = page.continueCursor;
+  }
 }
 
 async function syncPackageSearchDigest(
@@ -152,7 +171,7 @@ export async function repointPackageLatestRelease(
   }
 
   const nextLatest = latestPointerAffected
-    ? await getMostRecentActivePackageRelease(ctx, packageId)
+    ? await getPreferredFallbackPackageRelease(ctx, packageId)
     : null;
   if (latestPointerAffected && nextLatest && !(nextLatest.distTags ?? []).includes("latest")) {
     await ctx.db.patch(nextLatest._id, {
@@ -167,6 +186,7 @@ export async function repointPackageLatestRelease(
   if (latestPointerAffected) {
     patch.latestReleaseId = nextLatest?._id;
     patch.latestVersionSummary = toPackageLatestVersionSummary(nextLatest);
+    patch.summary = nextLatest?.summary;
     patch.capabilityTags = nextLatest?.capabilities?.capabilityTags;
     patch.executesCode =
       typeof nextLatest?.capabilities?.executesCode === "boolean"

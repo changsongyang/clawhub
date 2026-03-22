@@ -605,6 +605,7 @@ const packageReleases = defineTable({
   packageId: v.id("packages"),
   version: v.string(),
   changelog: v.string(),
+  summary: v.optional(v.string()),
   distTags: v.array(v.string()),
   files: packageFilesValidator,
   integritySha256: v.string(),

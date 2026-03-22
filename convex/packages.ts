@@ -784,6 +784,7 @@ export const insertReleaseInternal = internalMutation({
       packageId: pkgId,
       version: args.version,
       changelog: args.changelog,
+      summary: args.summary,
       distTags: args.tags,
       files: args.files,
       integritySha256: args.integritySha256,

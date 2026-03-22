@@ -74,7 +74,7 @@ describe("package digest sync", () => {
     );
   });
 
-  it("repoints packages to the newest active release when latest is soft-deleted", async () => {
+  it("repoints packages to the highest-version active release and restores its summary", async () => {
     const pkg = {
       _id: "packages:demo",
       _creationTime: 1,
@@ -85,7 +85,7 @@ describe("package digest sync", () => {
       channel: "community",
       isOfficial: false,
       ownerUserId: "users:owner",
-      summary: "demo",
+      summary: "latest summary",
       tags: {
         latest: "packageReleases:demo-2",
         stable: "packageReleases:demo-2",
@@ -108,10 +108,26 @@ describe("package digest sync", () => {
       packageId: "packages:demo",
       version: "1.0.0",
       changelog: "old stable",
+      summary: "stable summary",
       compatibility: { openclaw: "^1.0.0" },
       capabilities: { capabilityTags: ["stable"], executesCode: false },
       verification: { tier: "verified" },
       distTags: ["stable"],
+      createdAt: 10,
+      softDeletedAt: undefined,
+    };
+    const legacyHotfixRelease = {
+      _id: "packageReleases:demo-legacy",
+      _creationTime: 20,
+      packageId: "packages:demo",
+      version: "0.9.9",
+      changelog: "legacy hotfix",
+      summary: "legacy summary",
+      compatibility: { openclaw: "^0.9.0" },
+      capabilities: { capabilityTags: ["legacy"], executesCode: false },
+      verification: { tier: "verified" },
+      distTags: ["legacy"],
+      createdAt: 20,
       softDeletedAt: undefined,
     };
     const owner = {
@@ -134,7 +150,7 @@ describe("package digest sync", () => {
               withIndex: vi.fn(() => ({
                 order: vi.fn(() => ({
                   paginate: vi.fn().mockResolvedValue({
-                    page: [fallbackRelease],
+                    page: [legacyHotfixRelease, fallbackRelease],
                     isDone: true,
                     continueCursor: "",
                   }),
@@ -172,6 +188,7 @@ describe("package digest sync", () => {
         latestReleaseId: "packageReleases:demo-1",
         tags: { latest: "packageReleases:demo-1" },
         latestVersionSummary: expect.objectContaining({ version: "1.0.0" }),
+        summary: "stable summary",
         capabilityTags: ["stable"],
         executesCode: false,
       }),
