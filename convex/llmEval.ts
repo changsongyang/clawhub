@@ -28,6 +28,22 @@ const internalRefs = internal as unknown as {
   };
 };
 
+async function runQueryRef<T>(
+  ctx: { runQuery: (ref: never, args: never) => Promise<unknown> },
+  ref: unknown,
+  args: unknown,
+): Promise<T> {
+  return (await ctx.runQuery(ref as never, args as never)) as T;
+}
+
+async function runMutationRef<T>(
+  ctx: { runMutation: (ref: never, args: never) => Promise<unknown> },
+  ref: unknown,
+  args: unknown,
+): Promise<T> {
+  return (await ctx.runMutation(ref as never, args as never)) as T;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -271,7 +287,7 @@ export const evaluatePackageReleaseWithLlm = internalAction({
     const model = getLlmEvalModel();
     const storeError = async (message: string) => {
       console.error(`[llmEval:package] ${message}`);
-      await ctx.runMutation(internalRefs.packages.updateReleaseLlmAnalysisInternal as never, {
+      await runMutationRef(ctx, internalRefs.packages.updateReleaseLlmAnalysisInternal, {
         releaseId: args.releaseId,
         llmAnalysis: {
           status: "error",
@@ -282,7 +298,7 @@ export const evaluatePackageReleaseWithLlm = internalAction({
       });
     };
 
-    const release = (await ctx.runQuery(internalRefs.packages.getReleaseByIdInternal as never, {
+    const release = (await runQueryRef(ctx, internalRefs.packages.getReleaseByIdInternal, {
       releaseId: args.releaseId,
     })) as Doc<"packageReleases"> | null;
     if (!release || release.softDeletedAt) {
@@ -290,7 +306,7 @@ export const evaluatePackageReleaseWithLlm = internalAction({
       return;
     }
 
-    const pkg = (await ctx.runQuery(internalRefs.packages.getPackageByIdInternal as never, {
+    const pkg = (await runQueryRef(ctx, internalRefs.packages.getPackageByIdInternal, {
       packageId: release.packageId,
     })) as Doc<"packages"> | null;
     if (!pkg) {
@@ -410,7 +426,7 @@ export const evaluatePackageReleaseWithLlm = internalAction({
       return;
     }
 
-    await ctx.runMutation(internalRefs.packages.updateReleaseLlmAnalysisInternal as never, {
+    await runMutationRef(ctx, internalRefs.packages.updateReleaseLlmAnalysisInternal, {
       releaseId: args.releaseId,
       llmAnalysis: {
         status: verdictToStatus(result.verdict),

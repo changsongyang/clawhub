@@ -28,6 +28,7 @@ const users = defineTable({
   githubFetchedAt: v.optional(v.number()),
   githubProfileSyncedAt: v.optional(v.number()),
   trustedPublisher: v.optional(v.boolean()),
+  personalPublisherId: v.optional(v.id("publishers")),
   requiresModerationAt: v.optional(v.number()),
   requiresModerationReason: v.optional(v.string()),
   deactivatedAt: v.optional(v.number()),
@@ -40,6 +41,34 @@ const users = defineTable({
   .index("email", ["email"])
   .index("phone", ["phone"])
   .index("handle", ["handle"]);
+
+const publishers = defineTable({
+  kind: v.union(v.literal("user"), v.literal("org")),
+  handle: v.string(),
+  displayName: v.string(),
+  bio: v.optional(v.string()),
+  image: v.optional(v.string()),
+  linkedUserId: v.optional(v.id("users")),
+  trustedPublisher: v.optional(v.boolean()),
+  deactivatedAt: v.optional(v.number()),
+  deletedAt: v.optional(v.number()),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  .index("by_handle", ["handle"])
+  .index("by_linked_user", ["linkedUserId"])
+  .index("by_kind_handle", ["kind", "handle"]);
+
+const publisherMembers = defineTable({
+  publisherId: v.id("publishers"),
+  userId: v.id("users"),
+  role: v.union(v.literal("owner"), v.literal("admin"), v.literal("publisher")),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  .index("by_publisher", ["publisherId"])
+  .index("by_user", ["userId"])
+  .index("by_publisher_user", ["publisherId", "userId"]);
 
 // Shared validator fragments used by both `skills` and `skillSearchDigest`.
 const forkOfValidator = v.optional(
@@ -185,6 +214,7 @@ const skills = defineTable({
   summary: v.optional(v.string()),
   resourceId: v.optional(v.string()),
   ownerUserId: v.id("users"),
+  ownerPublisherId: v.optional(v.id("publishers")),
   canonicalSkillId: v.optional(v.id("skills")),
   forkOf: forkOfValidator,
   latestVersionId: v.optional(v.id("skillVersions")),
@@ -265,6 +295,7 @@ const skills = defineTable({
 })
   .index("by_slug", ["slug"])
   .index("by_owner", ["ownerUserId"])
+  .index("by_owner_publisher", ["ownerPublisherId"])
   .index("by_updated", ["updatedAt"])
   .index("by_stats_downloads", ["statsDownloads", "updatedAt"])
   .index("by_stats_stars", ["statsStars", "updatedAt"])
@@ -305,18 +336,21 @@ const skillSlugAliases = defineTable({
   slug: v.string(),
   skillId: v.id("skills"),
   ownerUserId: v.id("users"),
+  ownerPublisherId: v.optional(v.id("publishers")),
   createdAt: v.number(),
   updatedAt: v.number(),
 })
   .index("by_slug", ["slug"])
   .index("by_skill", ["skillId"])
-  .index("by_owner", ["ownerUserId"]);
+  .index("by_owner", ["ownerUserId"])
+  .index("by_owner_publisher", ["ownerPublisherId"]);
 
 const souls = defineTable({
   slug: v.string(),
   displayName: v.string(),
   summary: v.optional(v.string()),
   ownerUserId: v.id("users"),
+  ownerPublisherId: v.optional(v.id("publishers")),
   latestVersionId: v.optional(v.id("soulVersions")),
   tags: v.record(v.string(), v.id("soulVersions")),
   softDeletedAt: v.optional(v.number()),
@@ -331,6 +365,7 @@ const souls = defineTable({
 })
   .index("by_slug", ["slug"])
   .index("by_owner", ["ownerUserId"])
+  .index("by_owner_publisher", ["ownerPublisherId"])
   .index("by_updated", ["updatedAt"]);
 
 const skillVersions = defineTable({
@@ -481,6 +516,7 @@ const skillEmbeddings = defineTable({
   skillId: v.id("skills"),
   versionId: v.id("skillVersions"),
   ownerId: v.id("users"),
+  ownerPublisherId: v.optional(v.id("publishers")),
   embedding: v.array(v.number()),
   isLatest: v.boolean(),
   isApproved: v.boolean(),
@@ -511,7 +547,9 @@ const skillSearchDigest = defineTable({
   displayName: v.string(),
   summary: v.optional(v.string()),
   ownerUserId: v.id("users"),
+  ownerPublisherId: v.optional(v.id("publishers")),
   ownerHandle: v.optional(v.string()),
+  ownerKind: v.optional(v.union(v.literal("user"), v.literal("org"))),
   ownerName: v.optional(v.string()),
   ownerDisplayName: v.optional(v.string()),
   ownerImage: v.optional(v.string()),
@@ -576,6 +614,7 @@ const packages = defineTable({
   displayName: v.string(),
   summary: v.optional(v.string()),
   ownerUserId: v.id("users"),
+  ownerPublisherId: v.optional(v.id("publishers")),
   family: packageFamilyValidator,
   channel: packageChannelValidator,
   isOfficial: v.boolean(),
@@ -606,6 +645,7 @@ const packages = defineTable({
 })
   .index("by_name", ["normalizedName"])
   .index("by_owner", ["ownerUserId"])
+  .index("by_owner_publisher", ["ownerPublisherId"])
   .index("by_family_updated", ["family", "updatedAt"])
   .index("by_family_channel_updated", ["family", "channel", "updatedAt"])
   .index("by_family_official_updated", ["family", "isOfficial", "updatedAt"])
@@ -696,7 +736,9 @@ const packageSearchDigest = defineTable({
   channel: packageChannelValidator,
   isOfficial: v.boolean(),
   ownerUserId: v.id("users"),
+  ownerPublisherId: v.optional(v.id("publishers")),
   ownerHandle: v.optional(v.string()),
+  ownerKind: v.optional(v.union(v.literal("user"), v.literal("org"))),
   summary: v.optional(v.string()),
   latestVersion: v.optional(v.string()),
   runtimeId: v.optional(v.string()),
@@ -777,7 +819,9 @@ const packageCapabilitySearchDigest = defineTable({
   channel: packageChannelValidator,
   isOfficial: v.boolean(),
   ownerUserId: v.id("users"),
+  ownerPublisherId: v.optional(v.id("publishers")),
   ownerHandle: v.optional(v.string()),
+  ownerKind: v.optional(v.union(v.literal("user"), v.literal("org"))),
   summary: v.optional(v.string()),
   latestVersion: v.optional(v.string()),
   runtimeId: v.optional(v.string()),
@@ -1203,6 +1247,8 @@ const skillOwnershipTransfers = defineTable({
 export default defineSchema({
   ...authTables,
   users,
+  publishers,
+  publisherMembers,
   skills,
   skillSlugAliases,
   packages,

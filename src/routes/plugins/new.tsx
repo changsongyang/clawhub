@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useAction, useMutation } from "convex/react";
-import { startTransition, useMemo, useState } from "react";
+import { useAction, useMutation, useQuery } from "convex/react";
+import { startTransition, useEffect, useMemo, useState } from "react";
 import { api } from "../../../convex/_generated/api";
 import {
   MAX_PUBLISH_FILE_BYTES,
@@ -23,6 +23,17 @@ const apiRefs = api as unknown as {
 
 function PublishPluginRoute() {
   const { isAuthenticated } = useAuthStatus();
+  const publishers = useQuery(api.publishers.listMine) as
+    | Array<{
+        publisher: {
+          _id: string;
+          handle: string;
+          displayName: string;
+          kind: "user" | "org";
+        };
+        role: "owner" | "admin" | "publisher";
+      }>
+    | undefined;
   const generateUploadUrl = useMutation(api.uploads.generateUploadUrl);
   const publishRelease = useAction(apiRefs.packages.publishRelease as never) as unknown as (
     args: { payload: unknown },
@@ -30,6 +41,7 @@ function PublishPluginRoute() {
   const [family, setFamily] = useState<"code-plugin" | "bundle-plugin">("code-plugin");
   const [name, setName] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [ownerHandle, setOwnerHandle] = useState("");
   const [version, setVersion] = useState("0.1.0");
   const [changelog, setChangelog] = useState("");
   const [sourceRepo, setSourceRepo] = useState("");
@@ -82,6 +94,14 @@ function PublishPluginRoute() {
     }
   };
 
+  useEffect(() => {
+    if (ownerHandle) return;
+    const personal = publishers?.find((entry) => entry.publisher.kind === "user") ?? publishers?.[0];
+    if (personal?.publisher.handle) {
+      setOwnerHandle(personal.publisher.handle);
+    }
+  }, [ownerHandle, publishers]);
+
   return (
     <main className="section">
       <header className="skills-header-top">
@@ -108,6 +128,13 @@ function PublishPluginRoute() {
           value={displayName}
           onChange={(event) => setDisplayName(event.target.value)}
         />
+        <select className="input" value={ownerHandle} onChange={(event) => setOwnerHandle(event.target.value)}>
+          {(publishers ?? []).map((entry) => (
+            <option key={entry.publisher._id} value={entry.publisher.handle}>
+              @{entry.publisher.handle} · {entry.publisher.displayName}
+            </option>
+          ))}
+        </select>
         <input className="input" placeholder="Version" value={version} onChange={(event) => setVersion(event.target.value)} />
         <textarea
           className="input"
@@ -202,6 +229,7 @@ function PublishPluginRoute() {
                     payload: {
                       name: name.trim(),
                       displayName: displayName.trim() || undefined,
+                      ownerHandle: ownerHandle || undefined,
                       family,
                       version: version.trim(),
                       changelog: changelog.trim(),

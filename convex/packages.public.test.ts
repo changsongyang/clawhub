@@ -80,6 +80,7 @@ const insertReleaseInternalHandler = (
     {
       actorUserId: string;
       ownerUserId: string;
+      ownerPublisherId?: string;
       name: string;
       displayName: string;
       family: "skill" | "code-plugin" | "bundle-plugin";
@@ -184,6 +185,7 @@ function makeDigest(
     isOfficial: false,
     summary: `${name} summary`,
     ownerUserId: "users:owner",
+    ownerPublisherId: undefined,
     ownerHandle: "owner",
     createdAt: 1,
     updatedAt: 1,
@@ -206,6 +208,7 @@ function makePackageDoc(overrides: Partial<Record<string, unknown>> = {}) {
     channel: "community",
     isOfficial: false,
     ownerUserId: "users:owner",
+    ownerPublisherId: undefined,
     tags: {},
     latestReleaseId: "packageReleases:demo-1",
     latestVersionSummary: { version: "1.0.0" },
@@ -237,6 +240,7 @@ function makeDigestCtx(options: {
     isDone: boolean;
     continueCursor: string;
   }>;
+  publisherMemberships?: Record<string, "owner" | "admin" | "publisher">;
 }) {
   const pageByTable = new Map<
     string,
@@ -304,6 +308,38 @@ function makeDigestCtx(options: {
     ctx: {
       db: {
         query: vi.fn((table: string) => {
+          if (table === "publisherMembers") {
+            return {
+              withIndex: vi.fn(
+                (
+                  _indexName: string,
+                  builder?: (q: { eq: (field: string, value: string) => unknown }) => unknown,
+                ) => {
+                  let publisherId = "";
+                  const queryBuilder = {
+                    eq: (field: string, value: string) => {
+                      if (field === "publisherId") publisherId = value;
+                      return queryBuilder;
+                    },
+                  };
+                  builder?.(queryBuilder);
+                  const role = options.publisherMemberships?.[publisherId];
+                  return {
+                    unique: vi.fn().mockResolvedValue(
+                      role
+                        ? {
+                            _id: `publisherMembers:${publisherId}`,
+                            publisherId,
+                            userId: "users:member",
+                            role,
+                          }
+                        : null,
+                    ),
+                  };
+                },
+              ),
+            };
+          }
           if (table !== "packageSearchDigest" && table !== "packageCapabilitySearchDigest") {
             throw new Error(`Unexpected table ${table}`);
           }
@@ -320,7 +356,7 @@ function makeDigestCtx(options: {
 function makeInsertReleaseCtx(
   existing: Record<string, unknown> | null,
   priorReleases: Array<Record<string, unknown>> = [],
-  users: Record<string, Record<string, unknown>> = {},
+  recordsById: Record<string, Record<string, unknown>> = {},
 ) {
   const patch = vi.fn();
   const insert = vi
@@ -331,7 +367,7 @@ function makeInsertReleaseCtx(
     insert,
     db: {
       get: vi.fn(async (id: string) => {
-        if (id in users) return users[id];
+        if (id in recordsById) return recordsById[id];
         if (id === "users:owner") return { _id: id, role: "user", trustedPublisher: false };
         return null;
       }),
@@ -373,10 +409,13 @@ function makePackageCtx(options: {
   latestRelease?: Record<string, unknown> | null;
   versionRelease?: Record<string, unknown> | null;
   versionsPage?: { page: Array<Record<string, unknown>>; isDone: boolean; continueCursor: string };
+  ownerPublisher?: Record<string, unknown> | null;
+  viewerMembershipRole?: "owner" | "admin" | "publisher" | null;
 }) {
   const pkg = options.pkg ?? makePackageDoc();
   const latestRelease = options.latestRelease ?? makeReleaseDoc();
   const versionRelease = options.versionRelease ?? latestRelease;
+  const ownerPublisher = options.ownerPublisher ?? null;
   const versionsPage = options.versionsPage ?? {
     page: [latestRelease].filter(Boolean),
     isDone: true,
@@ -390,6 +429,7 @@ function makePackageCtx(options: {
       db: {
         get: vi.fn(async (id: string) => {
           if (pkg && id === pkg.ownerUserId) return { _id: id, handle: "owner" };
+          if (ownerPublisher && pkg && id === pkg.ownerPublisherId) return ownerPublisher;
           if (pkg && id === pkg.latestReleaseId) return latestRelease;
           return null;
         }),
@@ -428,6 +468,22 @@ function makePackageCtx(options: {
                   })),
                 };
               }),
+            };
+          }
+          if (table === "publisherMembers") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue(
+                  options.viewerMembershipRole
+                    ? {
+                        _id: "publisherMembers:1",
+                        publisherId: pkg?.ownerPublisherId,
+                        userId: "users:member",
+                        role: options.viewerMembershipRole,
+                      }
+                    : null,
+                ),
+              })),
             };
           }
           throw new Error(`Unexpected table ${table}`);
@@ -644,6 +700,35 @@ describe("packages public queries", () => {
     expect(indexNames).toEqual(["by_active_channel_updated"]);
   });
 
+  it("allows org collaborators to list their private packages", async () => {
+    const { ctx } = makeDigestCtx({
+      pages: [
+        {
+          page: [
+            makeDigest("secret-plugin", {
+              channel: "private",
+              ownerUserId: "users:owner",
+              ownerPublisherId: "publishers:org",
+            }),
+            makeDigest("public-plugin"),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+      publisherMemberships: {
+        "publishers:org": "publisher",
+      },
+    });
+
+    const result = await listPageForViewerInternalHandler(ctx, {
+      paginationOpts: { cursor: null, numItems: 10 },
+      viewerUserId: "users:member",
+    });
+
+    expect(result.page.map((entry) => entry.name)).toEqual(["secret-plugin", "public-plugin"]);
+  });
+
   it("applies isOfficial filtering even with family and channel set", async () => {
     const { ctx } = makeDigestCtx({
       pages: [
@@ -786,6 +871,49 @@ describe("packages public queries", () => {
       channel: "private",
       limit: 10,
       viewerUserId: "users:owner",
+    });
+
+    expect(result.map((entry) => entry.package.name)).toEqual(["secret-tools"]);
+  });
+
+  it("allows org collaborators to search their private packages", async () => {
+    const { ctx } = makeDigestCtx({
+      capabilityPages: [
+        {
+          page: [
+            makeDigest("secret-tools", {
+              channel: "private",
+              ownerUserId: "users:owner",
+              ownerPublisherId: "publishers:org",
+              executesCode: true,
+              capabilityTags: ["tools"],
+              capabilityTag: "tools",
+            }),
+            makeDigest("other-secret-tools", {
+              channel: "private",
+              ownerUserId: "users:other",
+              ownerPublisherId: "publishers:other",
+              executesCode: true,
+              capabilityTags: ["tools"],
+              capabilityTag: "tools",
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+      publisherMemberships: {
+        "publishers:org": "publisher",
+      },
+    });
+
+    const result = await searchForViewerInternalHandler(ctx, {
+      query: "secret",
+      executesCode: true,
+      capabilityTag: "tools",
+      channel: "private",
+      limit: 10,
+      viewerUserId: "users:member",
     });
 
     expect(result.map((entry) => entry.package.name)).toEqual(["secret-tools"]);
@@ -1019,6 +1147,32 @@ describe("packages public queries", () => {
 
     expect(detail?.package.name).toBe("demo-plugin");
     expect(version?.version.version).toBe("1.0.0");
+  });
+
+  it("allows org collaborators to read org-owned private packages", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users:member" as never);
+    const { ctx } = makePackageCtx({
+      pkg: makePackageDoc({
+        channel: "private",
+        ownerUserId: "users:owner",
+        ownerPublisherId: "publishers:org",
+      }),
+      ownerPublisher: {
+        _id: "publishers:org",
+        _creationTime: 1,
+        kind: "org",
+        handle: "acme",
+        displayName: "Acme",
+        linkedUserId: undefined,
+      },
+      viewerMembershipRole: "publisher",
+    });
+
+    const detail = await getByNameHandler(ctx, {
+      name: "demo-plugin",
+    });
+
+    expect(detail?.package.name).toBe("demo-plugin");
   });
 
   it("treats auth resolution failures as anonymous for public package detail", async () => {
@@ -1257,6 +1411,91 @@ describe("packages public queries", () => {
         integritySha256: "abc123",
       }),
     ).rejects.toThrow("Forbidden");
+  });
+
+  it("rejects publishing the same package name across different publishers", async () => {
+    const ctx = makeInsertReleaseCtx(
+      makePackageDoc({
+        ownerUserId: "users:owner",
+        ownerPublisherId: undefined,
+        stats: { downloads: 0, installs: 0, stars: 0, versions: 1 },
+      }),
+      [],
+      {
+        "users:owner": { _id: "users:owner", role: "user", trustedPublisher: false },
+        "publishers:org": {
+          _id: "publishers:org",
+          kind: "org",
+          handle: "acme",
+          displayName: "Acme",
+          trustedPublisher: false,
+        },
+      },
+    );
+
+    await expect(
+      insertReleaseInternalHandler(ctx, {
+        actorUserId: "users:owner",
+        ownerUserId: "users:owner",
+        ownerPublisherId: "publishers:org",
+        name: "demo-plugin",
+        displayName: "Demo Plugin",
+        family: "code-plugin",
+        version: "1.1.0",
+        changelog: "org release",
+        tags: ["latest"],
+        summary: "demo",
+        files: [],
+        integritySha256: "abc123",
+      }),
+    ).rejects.toThrow("Package already exists and belongs to another publisher");
+  });
+
+  it("treats a legacy personal package as the same personal publisher", async () => {
+    const ctx = makeInsertReleaseCtx(
+      makePackageDoc({
+        ownerUserId: "users:owner",
+        ownerPublisherId: undefined,
+        stats: { downloads: 0, installs: 0, stars: 0, versions: 1 },
+      }),
+      [],
+      {
+        "users:owner": { _id: "users:owner", role: "user", trustedPublisher: false },
+        "publishers:owner": {
+          _id: "publishers:owner",
+          kind: "user",
+          handle: "owner",
+          displayName: "Owner",
+          linkedUserId: "users:owner",
+          trustedPublisher: false,
+        },
+      },
+    );
+
+    await expect(
+      insertReleaseInternalHandler(ctx, {
+        actorUserId: "users:owner",
+        ownerUserId: "users:owner",
+        ownerPublisherId: "publishers:owner",
+        name: "demo-plugin",
+        displayName: "Demo Plugin",
+        family: "code-plugin",
+        version: "1.1.0",
+        changelog: "personal release",
+        tags: ["latest"],
+        summary: "demo",
+        files: [],
+        integritySha256: "abc123",
+      }),
+    ).resolves.toMatchObject({ ok: true, packageId: "packages:demo" });
+
+    expect(ctx.patch).toHaveBeenCalledWith(
+      "packages:demo",
+      expect.objectContaining({
+        ownerUserId: "users:owner",
+        ownerPublisherId: "publishers:owner",
+      }),
+    );
   });
 
   it("does not overwrite capability search fields for non-latest releases", async () => {
@@ -1518,7 +1757,7 @@ describe("packages public queries", () => {
     };
 
     const result = (await publishPackageForUserInternalHandler(ctx as never, {
-      userId: "users:owner",
+      actorUserId: "users:owner",
       payload: {
         name: "demo-plugin",
         displayName: "Demo Plugin",

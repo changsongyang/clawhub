@@ -31,7 +31,8 @@ import {
   getPublishTotalSizeError,
   MAX_PUBLISH_TOTAL_BYTES,
 } from "./lib/publishLimits";
-import { toPublicUser } from "./lib/public";
+import { getOwnerPublisher, getPublisherMembership } from "./lib/publishers";
+import { toPublicPublisher } from "./lib/public";
 import { runStaticPublishScan } from "./lib/staticPublishScan";
 import { hashSkillFiles } from "./lib/skills";
 
@@ -59,6 +60,9 @@ const internalRefs = internal as unknown as {
   users: {
     getByIdInternal: unknown;
     getByHandleInternal: unknown;
+  };
+  publishers: {
+    resolvePublishTargetForUserInternal: unknown;
   };
   vt: {
     scanPackageReleaseWithVirusTotal: unknown;
@@ -92,8 +96,10 @@ type PackageDigestLike = Pick<
   | "channel"
   | "isOfficial"
   | "ownerUserId"
+  | "ownerPublisherId"
   | "summary"
   | "ownerHandle"
+  | "ownerKind"
   | "createdAt"
   | "updatedAt"
   | "latestVersion"
@@ -129,6 +135,36 @@ async function runMutationRef<T>(
   return (await ctx.runMutation(ref as never, args as never)) as T;
 }
 
+async function runActionRef<T>(
+  ctx: { runAction: (ref: never, args: never) => Promise<unknown> },
+  ref: unknown,
+  args: unknown,
+): Promise<T> {
+  return (await ctx.runAction(ref as never, args as never)) as T;
+}
+
+async function runAfterRef(
+  ctx: { scheduler: { runAfter: (delayMs: number, ref: never, args: never) => Promise<unknown> } },
+  delayMs: number,
+  ref: unknown,
+  args: unknown,
+) {
+  return await ctx.scheduler.runAfter(delayMs, ref as never, args as never);
+}
+
+function toPackageScanStatus(status: string | undefined): Doc<"packages">["scanStatus"] {
+  switch (status) {
+    case "clean":
+    case "suspicious":
+    case "malicious":
+    case "pending":
+    case "not-run":
+      return status;
+    default:
+      return undefined;
+  }
+}
+
 type PublicPackageDoc = {
   _id: Id<"packages">;
   name: string;
@@ -151,6 +187,29 @@ type PublicPackageDoc = {
 
 function isPackageBlockedFromPublic(scanStatus: Doc<"packages">["scanStatus"]) {
   return scanStatus === "pending" || scanStatus === "malicious";
+}
+
+async function viewerCanAccessPackageOwner(
+  ctx: DbReaderCtx,
+  digest: Pick<PackageDigestLike, "ownerUserId" | "ownerPublisherId">,
+  viewerUserId: Id<"users"> | undefined,
+  membershipCache?: Map<string, Promise<boolean>>,
+) {
+  if (!viewerUserId) return false;
+  if (digest.ownerUserId === viewerUserId) return true;
+  if (!digest.ownerPublisherId) return false;
+
+  const cacheKey = String(digest.ownerPublisherId);
+  const cached = membershipCache?.get(cacheKey);
+  if (cached) return await cached;
+
+  const membershipPromise = getPublisherMembership(
+    ctx,
+    digest.ownerPublisherId,
+    viewerUserId,
+  ).then(Boolean);
+  membershipCache?.set(cacheKey, membershipPromise);
+  return await membershipPromise;
 }
 
 function toPublicPackage(
@@ -513,8 +572,9 @@ async function getReadablePackageByName(
   const normalizedName = normalizePackageName(name);
   const pkg = await getPackageByNormalizedName(ctx, normalizedName);
   if (!pkg || pkg.softDeletedAt) return null;
-  if (pkg.channel === "private" && pkg.ownerUserId !== viewerUserId) return null;
-  if (isPackageBlockedFromPublic(pkg.scanStatus) && pkg.ownerUserId !== viewerUserId) return null;
+  const isPrivilegedViewer = await viewerCanAccessPackageOwner(ctx, pkg, viewerUserId);
+  if (pkg.channel === "private" && !isPrivilegedViewer) return null;
+  if (isPackageBlockedFromPublic(pkg.scanStatus) && !isPrivilegedViewer) return null;
   return pkg;
 }
 
@@ -527,7 +587,12 @@ export const getByName = query({
     const latestRelease = pkg.latestReleaseId ? await ctx.db.get(pkg.latestReleaseId) : null;
     const publicPackage = toPublicPackage(pkg, latestRelease);
     if (!publicPackage) return null;
-    const owner = toPublicUser(await ctx.db.get(pkg.ownerUserId));
+    const owner = toPublicPublisher(
+      await getOwnerPublisher(ctx, {
+        ownerPublisherId: pkg.ownerPublisherId,
+        ownerUserId: pkg.ownerUserId,
+      }),
+    );
     return {
       package: publicPackage,
       latestRelease: latestRelease && !latestRelease.softDeletedAt ? latestRelease : null,
@@ -547,7 +612,12 @@ export const getByNameForViewerInternal = internalQuery({
     const latestRelease = pkg.latestReleaseId ? await ctx.db.get(pkg.latestReleaseId) : null;
     const publicPackage = toPublicPackage(pkg, latestRelease);
     if (!publicPackage) return null;
-    const owner = toPublicUser(await ctx.db.get(pkg.ownerUserId));
+    const owner = toPublicPublisher(
+      await getOwnerPublisher(ctx, {
+        ownerPublisherId: pkg.ownerPublisherId,
+        ownerUserId: pkg.ownerUserId,
+      }),
+    );
     return {
       package: publicPackage,
       latestRelease: latestRelease && !latestRelease.softDeletedAt ? latestRelease : null,
@@ -689,9 +759,19 @@ async function listPackagePageImpl(
     return { page: [], isDone: true, continueCursor: "" };
   }
   const viewerUserId = args.viewerUserId;
-  const canViewPackage = (digest: PackageDigestLike) =>
-    (digest.channel !== "private" || digest.ownerUserId === viewerUserId) &&
-    (!isPackageBlockedFromPublic(digest.scanStatus) || digest.ownerUserId === viewerUserId);
+  const membershipCache = new Map<string, Promise<boolean>>();
+  const canViewPackage = async (digest: PackageDigestLike) => {
+    const isPrivilegedViewer = await viewerCanAccessPackageOwner(
+      ctx,
+      digest,
+      viewerUserId,
+      membershipCache,
+    );
+    return (
+      (digest.channel !== "private" || isPrivilegedViewer) &&
+      (!isPackageBlockedFromPublic(digest.scanStatus) || isPrivilegedViewer)
+    );
+  };
   const targetCount = args.paginationOpts.numItems;
   const collected: PublicPackageListItem[] = [];
   const decodedCursor = decodePublicPageCursor(args.paginationOpts.cursor);
@@ -735,7 +815,7 @@ async function listPackagePageImpl(
     } = await builder.order("desc").paginate({ cursor: pageCursor, numItems: effectivePageSize });
     for (let index = offset; index < page.page.length; index += 1) {
       const digest = page.page[index] as PackageDigestLike;
-      if (!canViewPackage(digest)) continue;
+      if (!(await canViewPackage(digest))) continue;
       if (channel && digest.channel !== channel) continue;
       if (typeof isOfficial === "boolean" && digest.isOfficial !== isOfficial) {
         continue;
@@ -828,9 +908,19 @@ async function searchPackagesImpl(
   if (args.channel === "private" && !args.viewerUserId) return [];
   const targetCount = Math.max(1, Math.min(args.limit ?? 20, 100));
   const viewerUserId = args.viewerUserId;
-  const canViewPackage = (digest: PackageDigestLike) =>
-    (digest.channel !== "private" || digest.ownerUserId === viewerUserId) &&
-    (!isPackageBlockedFromPublic(digest.scanStatus) || digest.ownerUserId === viewerUserId);
+  const membershipCache = new Map<string, Promise<boolean>>();
+  const canViewPackage = async (digest: PackageDigestLike) => {
+    const isPrivilegedViewer = await viewerCanAccessPackageOwner(
+      ctx,
+      digest,
+      viewerUserId,
+      membershipCache,
+    );
+    return (
+      (digest.channel !== "private" || isPrivilegedViewer) &&
+      (!isPackageBlockedFromPublic(digest.scanStatus) || isPrivilegedViewer)
+    );
+  };
   const builder = args.capabilityTag
     ? buildPackageCapabilityDigestQuery(ctx, {
         capabilityTag: args.capabilityTag,
@@ -864,7 +954,7 @@ async function searchPackagesImpl(
       continueCursor: string;
     } = await builder.order("desc").paginate({ cursor, numItems: effectivePageSize });
     for (const digest of page.page) {
-      if (!canViewPackage(digest)) continue;
+      if (!(await canViewPackage(digest))) continue;
       if (args.channel && digest.channel !== args.channel) continue;
       if (typeof args.isOfficial === "boolean" && digest.isOfficial !== args.isOfficial) {
         continue;
@@ -1052,7 +1142,16 @@ async function publishPackageImpl(
     throw new ConvexError("Skill packages must use the skills publish flow");
   }
   await requireGitHubAccountAge(ctx, actorUserId);
-  const ownerUserId = await resolvePackageOwnerUserId(ctx, actorUserId, payload.ownerHandle);
+  const ownerTarget = await runQueryRef<{
+    publisherId: Id<"publishers">;
+    linkedUserId?: Id<"users">;
+  } | null>(ctx, internalRefs.publishers.resolvePublishTargetForUserInternal, {
+    actorUserId,
+    ownerHandle: payload.ownerHandle,
+    minimumRole: "publisher",
+  });
+  const ownerUserId = ownerTarget?.linkedUserId ?? actorUserId;
+  const ownerPublisherId = ownerTarget?.publisherId;
 
   const family = payload.family;
   const name = normalizePackageName(payload.name);
@@ -1150,6 +1249,7 @@ async function publishPackageImpl(
     {
       actorUserId,
       ownerUserId,
+      ownerPublisherId,
       name,
       displayName,
       family,
@@ -1175,10 +1275,10 @@ async function publishPackageImpl(
     },
   );
 
-  await ctx.scheduler.runAfter(0, internalRefs.vt.scanPackageReleaseWithVirusTotal as never, {
+  await runAfterRef(ctx, 0, internalRefs.vt.scanPackageReleaseWithVirusTotal, {
     releaseId: publishResult.releaseId,
   });
-  await ctx.scheduler.runAfter(0, internalRefs.llmEval.evaluatePackageReleaseWithLlm as never, {
+  await runAfterRef(ctx, 0, internalRefs.llmEval.evaluatePackageReleaseWithLlm, {
     releaseId: publishResult.releaseId,
   });
 
@@ -1215,6 +1315,7 @@ export const insertReleaseInternal = internalMutation({
   args: {
     actorUserId: v.id("users"),
     ownerUserId: v.id("users"),
+    ownerPublisherId: v.optional(v.id("publishers")),
     name: v.string(),
     displayName: v.string(),
     family: v.union(v.literal("skill"), v.literal("code-plugin"), v.literal("bundle-plugin")),
@@ -1251,10 +1352,14 @@ export const insertReleaseInternal = internalMutation({
     if (!actor) throw new ConvexError("Unauthorized");
     const owner = await ctx.db.get(args.ownerUserId);
     if (!owner) throw new ConvexError("Unauthorized");
+    const ownerPublisher = args.ownerPublisherId
+      ? await ctx.db.get(args.ownerPublisherId)
+      : null;
     if (args.ownerUserId !== args.actorUserId) {
       assertAdmin(actor);
     }
-    if (args.channel === "official" && !owner.trustedPublisher) {
+    const publisherTrusted = ownerPublisher?.trustedPublisher ?? owner.trustedPublisher;
+    if (args.channel === "official" && !publisherTrusted) {
       throw new ConvexError("Only trusted publishers may publish to the official channel");
     }
     const existing = await getPackageByNormalizedName(ctx, normalizedName);
@@ -1262,12 +1367,29 @@ export const insertReleaseInternal = internalMutation({
       args.channel ??
       (existing?.channel === "private"
         ? "private"
-        : owner.trustedPublisher
+        : publisherTrusted
           ? "official"
           : "community");
     const nextIsOfficial = nextChannel === "official";
-    if (existing && existing.ownerUserId !== args.ownerUserId) {
-      throw new ConvexError("Package already exists and belongs to another user");
+    if (existing) {
+      const existingIsLegacyPersonalPackage =
+        !existing.ownerPublisherId &&
+        Boolean(
+          args.ownerPublisherId &&
+            ownerPublisher?.kind === "user" &&
+            ownerPublisher.linkedUserId === existing.ownerUserId,
+        );
+      const existingOwnerKey = existing.ownerPublisherId
+        ? `publisher:${existing.ownerPublisherId}`
+        : existingIsLegacyPersonalPackage
+          ? `publisher:${args.ownerPublisherId}`
+          : `user:${existing.ownerUserId}`;
+      const nextOwnerKey = args.ownerPublisherId
+        ? `publisher:${args.ownerPublisherId}`
+        : `user:${args.ownerUserId}`;
+      if (existingOwnerKey !== nextOwnerKey) {
+        throw new ConvexError("Package already exists and belongs to another publisher");
+      }
     }
     if (existing && existing.family !== args.family) {
       throw new ConvexError(
@@ -1303,6 +1425,7 @@ export const insertReleaseInternal = internalMutation({
         displayName: args.displayName,
         summary: args.summary,
         ownerUserId: args.ownerUserId,
+        ownerPublisherId: args.ownerPublisherId,
         family: args.family,
         channel: nextChannel,
         isOfficial: nextIsOfficial,
@@ -1372,6 +1495,8 @@ export const insertReleaseInternal = internalMutation({
 
     await ctx.db.patch(pkgId, {
       displayName: args.displayName,
+      ownerUserId: args.ownerUserId,
+      ownerPublisherId: args.ownerPublisherId ?? pkg.ownerPublisherId,
       summary: shouldPromoteLatest ? args.summary : pkg.summary,
       sourceRepo: args.sourceRepo,
       runtimeId: shouldPromoteLatest ? args.runtimeId : pkg.runtimeId,
@@ -1419,7 +1544,7 @@ function isReleaseActive(release: Doc<"packageReleases"> | null | undefined) {
 async function syncLatestPackageVerification(
   ctx: MutationCtx,
   release: Doc<"packageReleases">,
-  scanStatus: string | undefined,
+  scanStatus: Doc<"packages">["scanStatus"],
 ) {
   const pkg = await ctx.db.get(release.packageId);
   if (!pkg || pkg.latestReleaseId !== release._id) return;
@@ -1464,24 +1589,31 @@ export const updateReleaseScanResultsInternal = internalMutation({
   },
   handler: async (ctx, args) => {
     const release = await ctx.db.get(args.releaseId);
-    if (!isReleaseActive(release)) return;
+    if (!release || release.softDeletedAt) return;
+    const activeRelease = release;
 
     const patch: Partial<Doc<"packageReleases">> = {};
     if (args.sha256hash !== undefined) patch.sha256hash = args.sha256hash;
     if (args.vtAnalysis !== undefined) {
+      const nextScanStatus = toPackageScanStatus(args.vtAnalysis.status) ?? "pending";
       patch.vtAnalysis = args.vtAnalysis;
-      patch.verification = release.verification
+      patch.verification = activeRelease.verification
         ? {
-            ...release.verification,
-            scanStatus: args.vtAnalysis.status,
+            ...activeRelease.verification,
+            scanStatus: nextScanStatus,
           }
-        : release.verification;
+        : activeRelease.verification;
     }
     if (Object.keys(patch).length > 0) {
       await ctx.db.patch(args.releaseId, patch);
     }
     if (args.vtAnalysis !== undefined) {
-      await syncLatestPackageVerification(ctx, { ...release, ...patch }, args.vtAnalysis.status);
+      const nextScanStatus = toPackageScanStatus(args.vtAnalysis.status) ?? "pending";
+      await syncLatestPackageVerification(
+        ctx,
+        { ...activeRelease, ...patch } as Doc<"packageReleases">,
+        nextScanStatus,
+      );
     }
   },
 });
@@ -1525,7 +1657,7 @@ export const backfillPackageReleaseScansInternal = internalAction({
   },
   handler: async (ctx, args) => {
     const batchSize = Math.max(1, Math.min(args.batchSize ?? 50, 200));
-    const batch = (await ctx.runQuery(internalRefs.packages.getPackageReleaseScanBackfillBatchInternal as never, {
+    const batch = (await runQueryRef(ctx, internalRefs.packages.getPackageReleaseScanBackfillBatchInternal, {
       cursor: args.cursor,
       batchSize,
     })) as {
@@ -1536,17 +1668,17 @@ export const backfillPackageReleaseScansInternal = internalAction({
 
     let scheduled = args.scheduled ?? 0;
     for (const release of batch.releases) {
-      await ctx.scheduler.runAfter(0, internalRefs.vt.scanPackageReleaseWithVirusTotal as never, {
+      await runAfterRef(ctx, 0, internalRefs.vt.scanPackageReleaseWithVirusTotal, {
         releaseId: release.releaseId,
       });
-      await ctx.scheduler.runAfter(0, internalRefs.llmEval.evaluatePackageReleaseWithLlm as never, {
+      await runAfterRef(ctx, 0, internalRefs.llmEval.evaluatePackageReleaseWithLlm, {
         releaseId: release.releaseId,
       });
       scheduled += 1;
     }
 
     if (!batch.done) {
-      await ctx.scheduler.runAfter(0, internalRefs.packages.backfillPackageReleaseScansInternal as never, {
+      await runAfterRef(ctx, 0, internalRefs.packages.backfillPackageReleaseScansInternal, {
         cursor: batch.nextCursor,
         batchSize,
         scheduled,
@@ -1566,37 +1698,8 @@ export const backfillPackageReleaseScans = action({
     batchSize: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    return await ctx.runAction(internalRefs.packages.backfillPackageReleaseScansInternal as never, {
+    return await runActionRef(ctx, internalRefs.packages.backfillPackageReleaseScansInternal, {
       batchSize: args.batchSize,
     });
   },
 });
-
-async function resolvePackageOwnerUserId(
-  ctx: Pick<ActionCtx, "runQuery">,
-  actorUserId: Id<"users">,
-  ownerHandle: string | undefined,
-) {
-  const normalizedHandle = ownerHandle?.trim().replace(/^@+/, "").toLowerCase();
-  if (!normalizedHandle) return actorUserId;
-
-  const actor = await runQueryRef<Doc<"users"> | null>(ctx, internalRefs.users.getByIdInternal, {
-    userId: actorUserId,
-  });
-  if (!actor || actor.deletedAt || actor.deactivatedAt) {
-    throw new ConvexError("Unauthorized");
-  }
-  if ((actor.handle ?? "").trim().toLowerCase() === normalizedHandle) {
-    return actorUserId;
-  }
-
-  assertAdmin(actor);
-
-  const owner = await runQueryRef<Doc<"users"> | null>(ctx, internalRefs.users.getByHandleInternal, {
-    handle: normalizedHandle,
-  });
-  if (!owner || owner.deletedAt || owner.deactivatedAt) {
-    throw new ConvexError(`Owner handle "@${normalizedHandle}" not found`);
-  }
-  return owner._id;
-}

@@ -78,6 +78,7 @@ export type PublishOptions = {
   bypassQualityGate?: boolean;
   skipBackup?: boolean;
   skipWebhook?: boolean;
+  ownerPublisherId?: Id<"publishers">;
 };
 
 export async function publishVersionForUser(
@@ -272,6 +273,7 @@ export async function publishVersionForUser(
 
   const publishResult = (await ctx.runMutation(internal.skills.insertVersion, {
     userId,
+    ownerPublisherId: options.ownerPublisherId,
     slug,
     displayName,
     version,

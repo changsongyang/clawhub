@@ -85,6 +85,18 @@ export function Upload() {
   const [status, setStatus] = useState<string | null>(null);
   const isSubmitting = status !== null;
   const [error, setError] = useState<string | null>(null);
+  const publisherMemberships = useQuery(api.publishers.listMine) as
+    | Array<{
+        publisher: {
+          _id: string;
+          handle: string;
+          displayName: string;
+          kind: "user" | "org";
+        };
+        role: "owner" | "admin" | "publisher";
+      }>
+    | undefined;
+  const [ownerHandle, setOwnerHandle] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const setFileInputRef = (node: HTMLInputElement | null) => {
@@ -179,6 +191,14 @@ export function Upload() {
     const nextVersion = semver.inc(existing.latestVersion.version, "patch");
     if (nextVersion) setVersion(nextVersion);
   }, [existing]);
+
+  useEffect(() => {
+    if (ownerHandle) return;
+    const personalPublisher = publisherMemberships?.find((entry) => entry.publisher.kind === "user");
+    if (personalPublisher?.publisher.handle) {
+      setOwnerHandle(personalPublisher.publisher.handle);
+    }
+  }, [ownerHandle, publisherMemberships]);
 
   useEffect(() => {
     if (changelogTouchedRef.current) return;
@@ -384,6 +404,7 @@ export function Upload() {
     setStatus("Publishing…");
     try {
       const result = await publishVersion({
+        ownerHandle: isSoulMode ? undefined : ownerHandle || undefined,
         slug: trimmedSlug,
         displayName: trimmedName,
         version,
@@ -397,7 +418,8 @@ export function Upload() {
       setHasAttempted(false);
       setChangelogSource("user");
       if (result) {
-        const ownerParam = me?.handle ?? (me?._id ? String(me._id) : "unknown");
+        const ownerParam =
+          ownerHandle || me?.handle || (me?._id ? String(me._id) : "unknown");
         void navigate({
           to: isSoulMode ? "/souls/$slug" : "/$owner/$slug",
           params: isSoulMode ? { slug: trimmedSlug } : { owner: ownerParam, slug: trimmedSlug },
@@ -443,6 +465,26 @@ export function Upload() {
             onChange={(event) => setDisplayName(event.target.value)}
             placeholder={`My ${contentLabel}`}
           />
+
+          {!isSoulMode ? (
+            <>
+              <label className="form-label" htmlFor="ownerHandle">
+                Owner
+              </label>
+              <select
+                className="form-input"
+                id="ownerHandle"
+                value={ownerHandle}
+                onChange={(event) => setOwnerHandle(event.target.value)}
+              >
+                {(publisherMemberships ?? []).map((entry) => (
+                  <option key={entry.publisher._id} value={entry.publisher.handle}>
+                    @{entry.publisher.handle} · {entry.publisher.displayName}
+                  </option>
+                ))}
+              </select>
+            </>
+          ) : null}
 
           <label className="form-label" htmlFor="version">
             Version

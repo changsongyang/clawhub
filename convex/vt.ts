@@ -16,6 +16,31 @@ const internalRefs = internal as unknown as {
   };
 };
 
+async function runQueryRef<T>(
+  ctx: { runQuery: (ref: never, args: never) => Promise<unknown> },
+  ref: unknown,
+  args: unknown,
+): Promise<T> {
+  return (await ctx.runQuery(ref as never, args as never)) as T;
+}
+
+async function runMutationRef<T>(
+  ctx: { runMutation: (ref: never, args: never) => Promise<unknown> },
+  ref: unknown,
+  args: unknown,
+): Promise<T> {
+  return (await ctx.runMutation(ref as never, args as never)) as T;
+}
+
+async function runAfterRef(
+  ctx: { scheduler: { runAfter: (delayMs: number, ref: never, args: never) => Promise<unknown> } },
+  delayMs: number,
+  ref: unknown,
+  args: unknown,
+) {
+  return await ctx.scheduler.runAfter(delayMs, ref as never, args as never);
+}
+
 /**
  * Fix skills that have version.vtAnalysis but null skill.moderationReason.
  * This syncs the moderation reason from the cached VT results.
@@ -509,7 +534,7 @@ export const scanPackageReleaseWithVirusTotal = internalAction({
       return;
     }
 
-    const release = (await ctx.runQuery(internalRefs.packages.getReleaseByIdInternal as never, {
+    const release = (await runQueryRef(ctx, internalRefs.packages.getReleaseByIdInternal, {
       releaseId: args.releaseId,
     })) as Doc<"packageReleases"> | null;
     if (!release || release.softDeletedAt) {
@@ -517,7 +542,7 @@ export const scanPackageReleaseWithVirusTotal = internalAction({
       return;
     }
 
-    const pkg = (await ctx.runQuery(internalRefs.packages.getPackageByIdInternal as never, {
+    const pkg = (await runQueryRef(ctx, internalRefs.packages.getPackageByIdInternal, {
       packageId: release.packageId,
     })) as Doc<"packages"> | null;
     if (!pkg) {
@@ -545,7 +570,7 @@ export const scanPackageReleaseWithVirusTotal = internalAction({
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
 
-    await ctx.runMutation(internalRefs.packages.updateReleaseScanResultsInternal as never, {
+    await runMutationRef(ctx, internalRefs.packages.updateReleaseScanResultsInternal, {
       releaseId: args.releaseId,
       sha256hash,
     });
@@ -558,7 +583,7 @@ export const scanPackageReleaseWithVirusTotal = internalAction({
 
       if (aiResult) {
         const verdict = normalizeVerdict(aiResult.verdict);
-        await ctx.runMutation(internalRefs.packages.updateReleaseScanResultsInternal as never, {
+        await runMutationRef(ctx, internalRefs.packages.updateReleaseScanResultsInternal, {
           releaseId: args.releaseId,
           vtAnalysis: {
             status: verdictToStatus(verdict),
@@ -591,7 +616,7 @@ export const scanPackageReleaseWithVirusTotal = internalAction({
         return;
       }
 
-      await ctx.scheduler.runAfter(PACKAGE_SCAN_RETRY_DELAY_MS, internalRefs.vt.pollPackageReleaseScanResults as never, {
+      await runAfterRef(ctx, PACKAGE_SCAN_RETRY_DELAY_MS, internalRefs.vt.pollPackageReleaseScanResults, {
         releaseId: args.releaseId,
         attempt: 1,
       });
@@ -614,7 +639,7 @@ export const pollPackageReleaseScanResults = internalAction({
     const apiKey = process.env.VT_API_KEY;
     if (!apiKey) return;
 
-    const release = (await ctx.runQuery(internalRefs.packages.getReleaseByIdInternal as never, {
+    const release = (await runQueryRef(ctx, internalRefs.packages.getReleaseByIdInternal, {
       releaseId: args.releaseId,
     })) as Doc<"packageReleases"> | null;
     if (!release || release.softDeletedAt || !release.sha256hash) return;
@@ -624,7 +649,7 @@ export const pollPackageReleaseScanResults = internalAction({
       const vtResult = await checkExistingFile(apiKey, release.sha256hash);
       if (!vtResult) {
         if (attempt < PACKAGE_SCAN_MAX_ATTEMPTS) {
-          await ctx.scheduler.runAfter(PACKAGE_SCAN_RETRY_DELAY_MS, internalRefs.vt.pollPackageReleaseScanResults as never, {
+          await runAfterRef(ctx, PACKAGE_SCAN_RETRY_DELAY_MS, internalRefs.vt.pollPackageReleaseScanResults, {
             releaseId: args.releaseId,
             attempt: attempt + 1,
           });
@@ -637,7 +662,7 @@ export const pollPackageReleaseScanResults = internalAction({
       );
       if (aiResult) {
         const verdict = normalizeVerdict(aiResult.verdict);
-        await ctx.runMutation(internalRefs.packages.updateReleaseScanResultsInternal as never, {
+        await runMutationRef(ctx, internalRefs.packages.updateReleaseScanResultsInternal, {
           releaseId: args.releaseId,
           vtAnalysis: {
             status: verdictToStatus(verdict),
@@ -652,7 +677,7 @@ export const pollPackageReleaseScanResults = internalAction({
 
       const status = statusFromAvStats(vtResult.data.attributes.last_analysis_stats);
       if (status) {
-        await ctx.runMutation(internalRefs.packages.updateReleaseScanResultsInternal as never, {
+        await runMutationRef(ctx, internalRefs.packages.updateReleaseScanResultsInternal, {
           releaseId: args.releaseId,
           vtAnalysis: {
             status,
@@ -665,7 +690,7 @@ export const pollPackageReleaseScanResults = internalAction({
 
       await requestRescan(apiKey, release.sha256hash);
       if (attempt < PACKAGE_SCAN_MAX_ATTEMPTS) {
-        await ctx.scheduler.runAfter(PACKAGE_SCAN_RETRY_DELAY_MS, internalRefs.vt.pollPackageReleaseScanResults as never, {
+        await runAfterRef(ctx, PACKAGE_SCAN_RETRY_DELAY_MS, internalRefs.vt.pollPackageReleaseScanResults, {
           releaseId: args.releaseId,
           attempt: attempt + 1,
         });

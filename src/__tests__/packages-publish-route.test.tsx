@@ -16,6 +16,7 @@ const useAuthStatusMock = vi.fn();
 vi.mock("convex/react", () => ({
   useMutation: () => generateUploadUrl,
   useAction: () => publishRelease,
+  useQuery: () => undefined,
 }));
 
 vi.mock("../lib/useAuthStatus", () => ({
@@ -164,7 +165,7 @@ describe("plugins publish route", () => {
   it("publishes a bundle plugin folder with bundle metadata", async () => {
     renderPublishRoute();
 
-    fireEvent.change(screen.getByRole("combobox"), {
+    fireEvent.change(screen.getAllByRole("combobox")[0], {
       target: { value: "bundle-plugin" },
     });
 

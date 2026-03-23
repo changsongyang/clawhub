@@ -6,6 +6,7 @@ import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { internalAction, internalMutation, internalQuery, mutation, query } from "./functions";
 import { assertAdmin, assertModerator, requireUser } from "./lib/access";
 import { syncGitHubProfile } from "./lib/githubAccount";
+import { ensurePersonalPublisherForUser } from "./lib/publishers";
 import { toPublicUser } from "./lib/public";
 import {
   getLatestActiveReservedHandle,
@@ -146,6 +147,10 @@ export const syncGitHubProfileInternal = internalMutation({
       updates.updatedAt = Date.now();
     }
     await ctx.db.patch(args.userId, updates);
+    const nextUser = await ctx.db.get(args.userId);
+    if (nextUser) {
+      await ensurePersonalPublisherForUser(ctx, nextUser);
+    }
   },
 });
 
@@ -238,8 +243,9 @@ export async function ensureHandler(ctx: MutationCtx) {
     updates.updatedAt = Date.now();
     await ctx.db.patch(userId, updates);
   }
-
-  return ctx.db.get(userId);
+  const ensuredUser = (await ctx.db.get(userId)) ?? user;
+  await ensurePersonalPublisherForUser(ctx, ensuredUser);
+  return await ctx.db.get(userId);
 }
 
 export const updateProfile = mutation({
@@ -254,6 +260,10 @@ export const updateProfile = mutation({
       bio: args.bio?.trim(),
       updatedAt: Date.now(),
     });
+    const user = await ctx.db.get(userId);
+    if (user) {
+      await ensurePersonalPublisherForUser(ctx, user);
+    }
   },
 });
 
