@@ -1,6 +1,8 @@
 import { customCtx, customMutation } from "convex-helpers/server/customFunctions";
 import { Triggers } from "convex-helpers/server/triggers";
+import { v } from "convex/values";
 import semver from "semver";
+import { internal } from "./_generated/api";
 import type { DataModel, Doc, Id } from "./_generated/dataModel";
 import {
   mutation as rawMutation,
@@ -30,6 +32,7 @@ function isMissingTableError(error: unknown, table: string) {
 }
 
 type PackageDigestSyncCtx = Pick<MutationCtx, "db">;
+type OwnerPublisherDigestScheduleCtx = Pick<MutationCtx, "scheduler">;
 type LatestPackageRelease = Pick<
   Doc<"packageReleases">,
   | "_id"
@@ -233,6 +236,41 @@ export async function syncSkillSearchDigestsForOwnerPublisherId(
   }
 }
 
+export async function scheduleOwnerPublisherDigestSync(
+  ctx: OwnerPublisherDigestScheduleCtx,
+  ownerPublisherId: Id<"publishers"> | null | undefined,
+) {
+  if (!ownerPublisherId) return;
+  await ctx.scheduler.runAfter(
+    0,
+    internal.functions.syncPackageSearchDigestsForOwnerPublisherIdInternal,
+    { ownerPublisherId },
+  );
+  await ctx.scheduler.runAfter(
+    0,
+    internal.functions.syncSkillSearchDigestsForOwnerPublisherIdInternal,
+    { ownerPublisherId },
+  );
+}
+
+export const syncPackageSearchDigestsForOwnerPublisherIdInternal = rawInternalMutation({
+  args: {
+    ownerPublisherId: v.id("publishers"),
+  },
+  handler: async (ctx, args) => {
+    await syncPackageSearchDigestsForOwnerPublisherId(ctx, args.ownerPublisherId);
+  },
+});
+
+export const syncSkillSearchDigestsForOwnerPublisherIdInternal = rawInternalMutation({
+  args: {
+    ownerPublisherId: v.id("publishers"),
+  },
+  handler: async (ctx, args) => {
+    await syncSkillSearchDigestsForOwnerPublisherId(ctx, args.ownerPublisherId);
+  },
+});
+
 export async function repointPackageLatestRelease(
   ctx: PackageDigestSyncCtx,
   packageId: Id<"packages"> | null | undefined,
@@ -335,8 +373,7 @@ triggers.register("users", async (ctx, change) => {
 
 triggers.register("publishers", async (ctx, change) => {
   const ownerPublisherId = change.operation === "delete" ? change.id : change.newDoc._id;
-  await syncPackageSearchDigestsForOwnerPublisherId(ctx, ownerPublisherId);
-  await syncSkillSearchDigestsForOwnerPublisherId(ctx, ownerPublisherId);
+  await scheduleOwnerPublisherDigestSync(ctx, ownerPublisherId);
 });
 
 export const mutation = customMutation(rawMutation, customCtx(triggers.wrapDB));

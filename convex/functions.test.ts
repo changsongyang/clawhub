@@ -1,8 +1,10 @@
 /* @vitest-environment node */
 
 import { describe, expect, it, vi } from "vitest";
+import { internal } from "./_generated/api";
 import {
   repointPackageLatestRelease,
+  scheduleOwnerPublisherDigestSync,
   syncPackageSearchDigestForPackageId,
   syncPackageSearchDigestsForOwnerUserId,
 } from "./functions";
@@ -498,6 +500,32 @@ describe("package digest sync", () => {
         packageId: "packages:demo",
         ownerHandle: "renamed",
       }),
+    );
+  });
+});
+
+describe("publisher digest scheduling", () => {
+  it("schedules package and skill digest sync in separate background mutations", async () => {
+    const ctx = {
+      scheduler: {
+        runAfter: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+
+    await scheduleOwnerPublisherDigestSync(ctx as never, "publishers:demo" as never);
+
+    expect(ctx.scheduler.runAfter).toHaveBeenCalledTimes(2);
+    expect(ctx.scheduler.runAfter).toHaveBeenNthCalledWith(
+      1,
+      0,
+      internal.functions.syncPackageSearchDigestsForOwnerPublisherIdInternal,
+      { ownerPublisherId: "publishers:demo" },
+    );
+    expect(ctx.scheduler.runAfter).toHaveBeenNthCalledWith(
+      2,
+      0,
+      internal.functions.syncSkillSearchDigestsForOwnerPublisherIdInternal,
+      { ownerPublisherId: "publishers:demo" },
     );
   });
 });
