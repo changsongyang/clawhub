@@ -6,7 +6,7 @@ import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { internalAction, internalMutation, internalQuery, mutation, query } from "./functions";
 import { assertAdmin, assertModerator, requireUser } from "./lib/access";
 import { syncGitHubProfile } from "./lib/githubAccount";
-import { ensurePersonalPublisherForUser } from "./lib/publishers";
+import { ensurePersonalPublisherForUser, getPublisherByHandle } from "./lib/publishers";
 import { toPublicUser } from "./lib/public";
 import {
   getLatestActiveReservedHandle,
@@ -97,7 +97,7 @@ export const syncGitHubProfileInternal = internalMutation({
   handler: async (ctx, args) => {
     const user = await ctx.db.get(args.userId);
     if (!user || user.deletedAt || user.deactivatedAt) return;
-    const canClaimNewHandle = !(await isHandleReservedForAnotherUser(ctx, args.name, args.userId));
+    const canClaimNewHandle = await canUserClaimHandle(ctx, args.name, args.userId);
 
     const updates: Partial<Doc<"users">> = { githubProfileSyncedAt: args.syncedAt };
     let didChangeProfile = false;
@@ -147,10 +147,8 @@ export const syncGitHubProfileInternal = internalMutation({
       updates.updatedAt = Date.now();
     }
     await ctx.db.patch(args.userId, updates);
-    const nextUser = await ctx.db.get(args.userId);
-    if (nextUser) {
-      await ensurePersonalPublisherForUser(ctx, nextUser);
-    }
+    const nextUser = didChangeProfile ? ({ ...user, ...updates } as Doc<"users">) : user;
+    await ensurePersonalPublisherForUser(ctx, nextUser);
   },
 });
 
@@ -199,6 +197,40 @@ function deriveHandle(args: { existingHandle?: string; githubLogin?: string; ema
   return undefined;
 }
 
+function appendHandleSuffix(base: string, suffix: number) {
+  const suffixText = suffix <= 1 ? "" : `-${suffix}`;
+  const maxBaseLength = Math.max(2, 40 - suffixText.length);
+  return `${base.slice(0, maxBaseLength)}${suffixText}`;
+}
+
+async function resolveAvailableHandle(
+  ctx: MutationCtx,
+  preferredHandle: string | undefined,
+  userId: Id<"users">,
+) {
+  const normalizedHandle = normalizeReservedHandle(preferredHandle);
+  if (!normalizedHandle) return undefined;
+  for (let suffix = 1; suffix <= 50; suffix += 1) {
+    const candidate = appendHandleSuffix(normalizedHandle, suffix);
+    if (await canUserClaimHandle(ctx, candidate, userId)) return candidate;
+  }
+  return undefined;
+}
+
+async function canUserClaimHandle(
+  ctx: MutationCtx,
+  handle: string | undefined,
+  userId: Id<"users">,
+) {
+  const normalizedHandle = normalizeReservedHandle(handle);
+  if (!normalizedHandle) return false;
+  if (await isHandleReservedForAnotherUser(ctx, normalizedHandle, userId)) return false;
+
+  const publisher = await getPublisherByHandle(ctx, normalizedHandle);
+  if (!publisher || publisher.deletedAt || publisher.deactivatedAt) return true;
+  return publisher.kind === "user" && publisher.linkedUserId === userId;
+}
+
 async function computeEnsureUpdates(ctx: MutationCtx, user: Doc<"users">) {
   const updates: Record<string, unknown> = {};
 
@@ -209,10 +241,18 @@ async function computeEnsureUpdates(ctx: MutationCtx, user: Doc<"users">) {
     githubLogin,
     email: user.email,
   });
-  const derivedHandle =
-    requestedHandle && !(await isHandleReservedForAnotherUser(ctx, requestedHandle, user._id))
+  let derivedHandle =
+    requestedHandle && (await canUserClaimHandle(ctx, requestedHandle, user._id))
       ? requestedHandle
       : undefined;
+  if (!derivedHandle && !existingHandle) {
+    const emailFallback = !requestedHandle && user.email ? user.email.split("@")[0]?.trim() : user.email?.split("@")[0]?.trim();
+    derivedHandle =
+      (emailFallback &&
+      emailFallback !== requestedHandle &&
+      (await resolveAvailableHandle(ctx, emailFallback, user._id))) ||
+      (await resolveAvailableHandle(ctx, requestedHandle, user._id));
+  }
   const baseHandle = derivedHandle ?? existingHandle;
 
   if (derivedHandle && existingHandle !== derivedHandle) {
@@ -239,11 +279,12 @@ export async function ensureHandler(ctx: MutationCtx) {
   const { userId, user } = await requireUser(ctx);
   const updates = await computeEnsureUpdates(ctx, user);
 
+  const hasUpdates = Object.keys(updates).length > 0;
   if (Object.keys(updates).length > 0) {
     updates.updatedAt = Date.now();
     await ctx.db.patch(userId, updates);
   }
-  const ensuredUser = (await ctx.db.get(userId)) ?? user;
+  const ensuredUser = hasUpdates ? ({ ...user, ...updates } as Doc<"users">) : ((await ctx.db.get(userId)) ?? user);
   await ensurePersonalPublisherForUser(ctx, ensuredUser);
   return await ctx.db.get(userId);
 }

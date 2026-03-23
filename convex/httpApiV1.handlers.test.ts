@@ -214,10 +214,17 @@ describe("httpApiV1 handlers", () => {
     });
   });
 
-  it("users/publisher ensures a shared publisher handle for admin", async () => {
+  it("users/publisher ensures an org publisher handle for admin", async () => {
     const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
       if (isRateLimitArgs(args)) return okRate();
-      return { ok: true, userId: "users:openclaw", handle: "openclaw", created: true, trusted: true };
+      return {
+        ok: true,
+        publisherId: "publishers:openclaw",
+        handle: "openclaw",
+        created: true,
+        migrated: false,
+        trusted: true,
+      };
     });
     vi.mocked(requireApiTokenUser).mockResolvedValue({
       userId: "users:admin",

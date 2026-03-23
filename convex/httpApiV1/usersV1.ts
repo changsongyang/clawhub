@@ -241,7 +241,7 @@ async function handleAdminEnsurePublisher(
     typeof payload.trusted === "boolean" ? payload.trusted : true;
 
   try {
-    const result = await ctx.runMutation(internal.users.ensurePublisherHandleInternal, {
+    const result = await ctx.runMutation(internal.publishers.ensureOrgPublisherHandleInternal, {
       actorUserId,
       handle,
       displayName,

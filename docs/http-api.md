@@ -449,10 +449,11 @@ Status codes:
 
 ### `POST /api/v1/users/publisher`
 
-Admin-only. Ensures a shared publisher account exists for a handle and reserves that handle for it.
+Admin-only. Ensures an org publisher exists for a handle. If the handle still points at a
+legacy shared user/personal publisher, the endpoint migrates it into an org publisher first.
 
 - Body: `{ "handle": "openclaw", "displayName": "OpenClaw", "trusted": true }`
-- Response: `{ "ok": true, "userId": "...", "handle": "openclaw", "created": true, "trusted": true }`
+- Response: `{ "ok": true, "publisherId": "...", "handle": "openclaw", "created": true, "migrated": false, "trusted": true }`
 
 ### Owner slug management endpoints
 
