@@ -172,7 +172,7 @@ function buildPackageUndetectedFallbackAnalysis(
   stats?: VTAnalysisStats,
 ) {
   if (!stats) return null;
-  if (pkg.family === "skill" || !pkg.isOfficial) return null;
+  if (pkg.family === "skill") return null;
 
   const tier = release.verification?.tier;
   if (tier !== "source-linked" && tier !== "provenance-verified" && tier !== "rebuild-verified") {
@@ -187,7 +187,7 @@ function buildPackageUndetectedFallbackAnalysis(
     status: "clean",
     verdict: "undetected-only-fallback",
     analysis:
-      "VirusTotal reported no malicious or suspicious engine hits. ClawHub promoted this official source-linked package after clean LLM and non-malicious static scans.",
+      "VirusTotal reported no malicious or suspicious engine hits. ClawHub promoted this source-linked package after clean LLM and non-malicious static scans.",
     source: "engines-undetected-fallback",
     checkedAt: Date.now(),
   };

@@ -339,6 +339,70 @@ describe("package VT retries", () => {
     expect(scheduler.runAfter).not.toHaveBeenCalled();
   });
 
+  it("promotes community source-linked packages with undetected-only VT stats via fallback", async () => {
+    process.env.VT_API_KEY = "test-key";
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: {
+          attributes: {
+            last_analysis_stats: {
+              malicious: 0,
+              suspicious: 0,
+              harmless: 0,
+              undetected: 66,
+            },
+          },
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const runMutation = vi.fn(async () => null);
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    await scanPackageReleaseWithVirusTotalHandler(
+      {
+        runQuery: vi
+          .fn()
+          .mockResolvedValueOnce({
+            _id: "packageReleases:demo",
+            packageId: "packages:demo",
+            version: "1.0.0",
+            verification: { tier: "source-linked" },
+            llmAnalysis: { status: "clean" },
+            staticScan: { status: "clean" },
+            files: [{ path: "package.json", storageId: "storage:pkg" }],
+          })
+          .mockResolvedValueOnce({
+            _id: "packages:demo",
+            name: "demo-plugin",
+            family: "code-plugin",
+            isOfficial: false,
+          }),
+        runMutation,
+        scheduler,
+        storage: {
+          get: vi.fn(async () => new Blob(['{"name":"demo-plugin"}'], { type: "application/json" })),
+        },
+      } as never,
+      { releaseId: "packageReleases:demo" },
+    );
+
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        releaseId: "packageReleases:demo",
+        vtAnalysis: expect.objectContaining({
+          status: "clean",
+          source: "engines-undetected-fallback",
+          verdict: "undetected-only-fallback",
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(scheduler.runAfter).not.toHaveBeenCalled();
+  });
+
   it("retries package poll when VT lookup throws", async () => {
     process.env.VT_API_KEY = "test-key";
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network error")));
@@ -423,5 +487,126 @@ describe("package VT retries", () => {
       }),
     );
     expect(scheduler.runAfter).not.toHaveBeenCalled();
+  });
+
+  it("applies the same undetected-only fallback during community package polling", async () => {
+    process.env.VT_API_KEY = "test-key";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: {
+            attributes: {
+              last_analysis_stats: {
+                malicious: 0,
+                suspicious: 0,
+                harmless: 0,
+                undetected: 66,
+              },
+            },
+          },
+        }),
+      }),
+    );
+
+    const runMutation = vi.fn(async () => null);
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    await pollPackageReleaseScanResultsHandler(
+      {
+        runQuery: vi
+          .fn()
+          .mockResolvedValueOnce({
+            _id: "packageReleases:demo",
+            packageId: "packages:demo",
+            version: "1.0.0",
+            sha256hash: "abc123",
+            verification: { tier: "source-linked" },
+            llmAnalysis: { status: "clean" },
+            staticScan: { status: "clean" },
+          })
+          .mockResolvedValueOnce({
+            _id: "packages:demo",
+            family: "code-plugin",
+            isOfficial: false,
+          }),
+        runMutation,
+        scheduler,
+      } as never,
+      { releaseId: "packageReleases:demo", attempt: 3 },
+    );
+
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        releaseId: "packageReleases:demo",
+        vtAnalysis: expect.objectContaining({
+          status: "clean",
+          source: "engines-undetected-fallback",
+          verdict: "undetected-only-fallback",
+        }),
+      }),
+    );
+    expect(scheduler.runAfter).not.toHaveBeenCalled();
+  });
+
+  it("does not promote undetected-only community packages without trusted verification", async () => {
+    process.env.VT_API_KEY = "test-key";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: {
+            attributes: {
+              last_analysis_stats: {
+                malicious: 0,
+                suspicious: 0,
+                harmless: 0,
+                undetected: 66,
+              },
+            },
+          },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({}),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const runMutation = vi.fn(async () => null);
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    await pollPackageReleaseScanResultsHandler(
+      {
+        runQuery: vi
+          .fn()
+          .mockResolvedValueOnce({
+            _id: "packageReleases:demo",
+            packageId: "packages:demo",
+            version: "1.0.0",
+            sha256hash: "abc123",
+            verification: { tier: "artifact-only" },
+            llmAnalysis: { status: "clean" },
+            staticScan: { status: "clean" },
+          })
+          .mockResolvedValueOnce({
+            _id: "packages:demo",
+            family: "code-plugin",
+            isOfficial: false,
+          }),
+        runMutation,
+        scheduler,
+      } as never,
+      { releaseId: "packageReleases:demo", attempt: 3 },
+    );
+
+    expect(runMutation).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(scheduler.runAfter).toHaveBeenCalledWith(
+      5 * 60 * 1000,
+      expect.anything(),
+      { releaseId: "packageReleases:demo", attempt: 4 },
+    );
   });
 });
