@@ -116,6 +116,10 @@ function mergeUniqueBySkillId(primary: SkillSearchEntry[], fallback: SkillSearch
   return out;
 }
 
+function isSlugLikeQuery(query: string) {
+  return /^[a-z0-9][a-z0-9-]*$/.test(query.trim().toLowerCase());
+}
+
 export const searchSkills: ReturnType<typeof action> = action({
   args: {
     query: v.string(),
@@ -128,6 +132,17 @@ export const searchSkills: ReturnType<typeof action> = action({
     if (!query) return [];
     const queryTokens = tokenize(query);
     if (queryTokens.length === 0) return [];
+    const rawExactSlugMatch =
+      isSlugLikeQuery(query)
+        ? ((await ctx.runQuery(internal.search.getExactSkillSlugMatch, {
+            slug: query.toLowerCase(),
+            nonSuspiciousOnly: args.nonSuspiciousOnly,
+          })) as SkillSearchEntry | null)
+        : null;
+    const exactSlugMatch =
+      rawExactSlugMatch && (!args.highlightedOnly || isSkillHighlighted(rawExactSlugMatch.skill))
+        ? rawExactSlugMatch
+        : null;
     let vector: number[];
     try {
       vector = await generateEmbedding(query);
@@ -192,8 +207,12 @@ export const searchSkills: ReturnType<typeof action> = action({
       candidateLimit = nextLimit;
     }
 
+    const primaryMatches = exactSlugMatch
+      ? mergeUniqueBySkillId([exactSlugMatch], exactMatches)
+      : exactMatches;
+
     const fallbackMatches =
-      exactMatches.length >= limit
+      primaryMatches.length >= limit
         ? []
         : ((await ctx.runQuery(internal.search.lexicalFallbackSkills, {
             query,
@@ -201,9 +220,9 @@ export const searchSkills: ReturnType<typeof action> = action({
             limit: Math.min(Math.max(limit * 4, 200), FALLBACK_SCAN_LIMIT),
             highlightedOnly: args.highlightedOnly,
             nonSuspiciousOnly: args.nonSuspiciousOnly,
+            skipExactSlugLookup: true,
           })) as SkillSearchEntry[]);
-
-    const mergedMatches = mergeUniqueBySkillId(exactMatches, fallbackMatches);
+    const mergedMatches = mergeUniqueBySkillId(primaryMatches, fallbackMatches);
 
     return mergedMatches
       .map((entry) => {
@@ -222,6 +241,33 @@ export const searchSkills: ReturnType<typeof action> = action({
       .filter((entry) => entry.skill)
       .sort((a, b) => b.score - a.score || b.skill.stats.downloads - a.skill.stats.downloads)
       .slice(0, limit);
+  },
+});
+
+export const getExactSkillSlugMatch = internalQuery({
+  args: {
+    slug: v.string(),
+    nonSuspiciousOnly: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args): Promise<SkillSearchEntry | null> => {
+    const skill = await ctx.db
+      .query("skills")
+      .withIndex("by_slug", (q) => q.eq("slug", args.slug))
+      .unique();
+    if (!skill || skill.softDeletedAt) return null;
+    if (args.nonSuspiciousOnly && isSkillSuspicious(skill)) return null;
+
+    const getOwnerInfo = makeOwnerInfoGetter(ctx);
+    const resolved = await getOwnerInfo(skill.ownerUserId, skill.ownerPublisherId);
+    const publicSkill = toPublicSkill(skill);
+    if (!publicSkill || !resolved.owner) return null;
+
+    return {
+      skill: publicSkill,
+      version: null,
+      ownerHandle: resolved.ownerHandle,
+      owner: resolved.owner,
+    };
   },
 });
 
@@ -285,6 +331,7 @@ export const lexicalFallbackSkills = internalQuery({
     limit: v.optional(v.number()),
     highlightedOnly: v.optional(v.boolean()),
     nonSuspiciousOnly: v.optional(v.boolean()),
+    skipExactSlugLookup: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<SkillSearchEntry[]> => {
     const limit = Math.min(Math.max(args.limit ?? 200, 10), FALLBACK_SCAN_LIMIT);
@@ -298,7 +345,7 @@ export const lexicalFallbackSkills = internalQuery({
 
     // Exact slug match via the skills table (only one row, cheap).
     const slugQuery = args.query.trim().toLowerCase();
-    if (/^[a-z0-9][a-z0-9-]*$/.test(slugQuery)) {
+    if (!args.skipExactSlugLookup && /^[a-z0-9][a-z0-9-]*$/.test(slugQuery)) {
       const exactSlugSkill = await ctx.db
         .query("skills")
         .withIndex("by_slug", (q) => q.eq("slug", slugQuery))
